@@ -1875,6 +1875,12 @@ if(TARGET EditorTests)
 	# Output layout: bin/<Config>/Tests
 	ge_set_output_tests(EditorTests)
 	ge_stage_runtime_dependencies(EditorTests)
+	# Inspector layout measurements must use the shipped regular and medium faces.
+	foreach(_ge_editor_test_font Roboto-Regular.ttf Roboto-Medium.ttf)
+		ge_stage_test_asset(EditorTests
+		    "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/Fonts/${_ge_editor_test_font}"
+		    "Assets/Fonts/${_ge_editor_test_font}")
+	endforeach()
 	# The suite reads fixtures out of the staged repo mirrors under the build root.
 	if(TARGET StageTestAssets)
 		add_dependencies(EditorTests StageTestAssets)

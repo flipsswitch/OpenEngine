@@ -12,6 +12,7 @@
 #include <gtest/gtest.h>
 
 #include "InspectorLayoutFixture.h"
+#include "Core/Application.h"
 #include "Input/KeyCodes.h"
 #include "UI/Controls/Button.h"
 #include "UI/Controls/InspectorNotice.h"
@@ -20,6 +21,7 @@
 #include "UI/UIElement.h"
 #include "UI/UIEvents.h"
 
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <utility>
@@ -96,6 +98,19 @@ bool Contains(const UIElement& outer, const UIElement& inner)
 }
 
 } // namespace
+
+TEST(InspectorNoticeLayout, MeasuresWithTheStagedEditorFonts)
+{
+    const std::filesystem::path fonts = GameEngine::PathUtils::GetInstallAssetsRoot() / "Fonts";
+    for (const char* face : {"Roboto-Regular.ttf", "Roboto-Medium.ttf"})
+        ASSERT_TRUE(std::filesystem::is_regular_file(fonts / face)) << fonts / face;
+
+    InspectorLayoutFixture fixture;
+    fixture.ExtraSheets = kNoticeSheets;
+    if (!fixture.Build(std::make_unique<InspectorNotice>("Generated.")))
+        GTEST_SKIP() << fixture.Diagnostic;
+    EXPECT_NE(fixture.Ui->GetDefaultFontAtlas(), nullptr);
+}
 
 TEST(InspectorNotice, ShowsItsTextAndFiresItsAction)
 {
