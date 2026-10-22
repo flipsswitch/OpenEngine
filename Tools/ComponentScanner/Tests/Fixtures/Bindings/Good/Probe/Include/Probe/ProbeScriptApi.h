@@ -12,6 +12,7 @@
 #include "Types/StringId.h"
 
 #include <cstdint>
+#include <span>
 
 namespace GameEngine::Probe
 {
@@ -100,6 +101,10 @@ void SetFlag(ProbeSystem& probe, bool on, std::int8_t level, double weight);
 /// The options the last Play used.
 // @ge-script @ge-context
 SoundOptions GetLastOptions(ProbeSystem& probe);
+
+/// Sum the volumes in a borrowed list. An empty list sums to zero; nothing is retained.
+// @ge-script @ge-context
+float SumVolumes(ProbeSystem& probe, std::span<const SoundOptions> options);
 
 /// Throws, so the binding's catch answers.
 // @ge-script

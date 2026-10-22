@@ -104,7 +104,11 @@ std::string PointerType(const ApiFunction& function, const Index& index)
 {
     std::string text = "delegate* unmanaged[Cdecl]<";
     for (const ApiParam& param : function.Params)
+    {
         text += (param.Out ? CSharpSlotType(param.Type, index) + "*" : CSharpInType(param.Type, index)) + ", ";
+        if (IsRecordSpan(param.Type))
+            text += "uint, ";
+    }
     if (function.Returns.Kind != ApiKind::Void)
         text += CSharpSlotType(function.Returns, index) + "*, ";
     return text + "int>";
@@ -158,6 +162,8 @@ std::string NameOf(const ApiParam& param, const Names& names)
 std::string ArgumentFor(const ApiParam& param, const Names& names)
 {
     const std::string name = NameOf(param, names);
+    if (IsRecordSpan(param.Type))
+        return param.Name + "Data, (uint)" + name + ".Length";
     if (param.Out || IsRecordDefault(param))
         return "&" + Local(param);
     switch (param.Type.Kind)
@@ -189,7 +195,15 @@ std::string FromSlot(const ApiType& type, const std::string& slot)
 void EmitBody(std::string& out, const ApiModule& module, const ApiFunction& function, const Index& index, std::string_view indent,
               const Names& names)
 {
-    const std::string pad(indent);
+    std::string pad(indent);
+    for (const ApiParam& param : function.Params)
+    {
+        if (!IsRecordSpan(param.Type))
+            continue;
+        out += pad + "fixed (" + CSharpInType(param.Type, index) + " " + param.Name + "Data = " +
+               NameOf(param, names) + ")\n" + pad + "{\n";
+        pad += "    ";
+    }
     std::string arguments;
     for (const ApiParam& param : function.Params)
     {
@@ -214,6 +228,13 @@ void EmitBody(std::string& out, const ApiModule& module, const ApiFunction& func
             out += pad + NameOf(param, names) + " = " + FromSlot(param.Type, Local(param)) + ";\n";
     if (hasResult)
         out += pad + "return " + FromSlot(function.Returns, "result") + ";\n";
+    for (const ApiParam& param : function.Params)
+    {
+        if (!IsRecordSpan(param.Type))
+            continue;
+        pad.resize(pad.size() - 4);
+        out += pad + "}\n";
+    }
 }
 
 void EmitMethod(std::string& out, const ApiModule& module, const ApiFunction& function, const Index& index, bool member)

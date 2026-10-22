@@ -57,8 +57,12 @@ std::string ParameterList(const ApiFunction& function, const BindingRules::Index
         text += (text.empty() ? "" : ", ") + type + (names ? " " + name : "");
     };
     for (const ApiParam& param : function.Params)
+    {
         add(param.Out ? BindingRules::NativeOutType(param.Type, index) : BindingRules::NativeInType(param.Type, index),
             param.Name);
+        if (BindingRules::IsRecordSpan(param.Type))
+            add("std::uint32_t", param.Name + "Count");
+    }
     if (HasResult(function))
         add(BindingRules::NativeOutType(function.Returns, index), "outResult");
     return text;
@@ -68,7 +72,11 @@ std::string ArgumentNames(const ApiFunction& function)
 {
     std::string text;
     for (const ApiParam& param : function.Params)
+    {
         text += (text.empty() ? "" : ", ") + param.Name;
+        if (BindingRules::IsRecordSpan(param.Type))
+            text += ", " + param.Name + "Count";
+    }
     if (HasResult(function))
         text += std::string(text.empty() ? "" : ", ") + "outResult";
     return text;
@@ -160,6 +168,8 @@ void EmitLayoutAsserts(std::string& out, const ApiModule& module, const BindingR
 // The expression that passes a thunk parameter on to the facade function.
 std::string Argument(const ApiParam& param)
 {
+    if (BindingRules::IsRecordSpan(param.Type))
+        return "{" + param.Name + ", " + param.Name + "Count}";
     if (param.Out)
         return BindingRules::OutConverts(param.Type) ? param.Name + "Value" : "*" + param.Name;
     if (param.Type.Kind == ApiKind::Bool)
@@ -197,7 +207,10 @@ void EmitThunk(std::string& out, const ApiModule& module, const ApiFunction& fun
     out += "    constexpr const char* kFunction = \"" + BindingRules::FunctionLabel(module, function.Name) + "\";\n";
     for (const ApiParam& param : function.Params)
     {
-        if (param.Out || BindingRules::CrossesByPointer(param.Type))
+        if (BindingRules::IsRecordSpan(param.Type))
+            out += "    if (" + param.Name + " == nullptr && " + param.Name + "Count != 0)\n"
+                   "        return ::GameEngine::ScriptingAbi::RefuseNull(kFunction, \"" + param.Name + "\");\n";
+        else if (param.Out || BindingRules::CrossesByPointer(param.Type))
             out += "    if (" + param.Name + " == nullptr)\n        return ::GameEngine::ScriptingAbi::RefuseNull(kFunction, \"" + param.Name +
                    "\");\n";
         else if (param.Type.Kind == ApiKind::StringId)

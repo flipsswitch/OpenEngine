@@ -79,6 +79,29 @@ TEST(ScriptBindings, RefusesWhatTheGeneratorsDoNotEmit)
               std::string::npos)
         << text;
     EXPECT_NE(text.find("the binding generators emit events with no @ge-context (`ContactBegin`)"), std::string::npos) << text;
+    EXPECT_NE(text.find("the binding generators do not emit the Span kind (parameter `weights`)"), std::string::npos) << text;
     EXPECT_FALSE(fs::exists(scratch.Path() / "api")) << "a refused scan writes nothing";
     EXPECT_FALSE(fs::exists(scratch.Path() / "csharp"));
+}
+
+TEST(ScriptBindings, RecordSpanNamesCannotHideGeneratedParameters)
+{
+    for (const char* suffix : {"Count", "Data"})
+    {
+        GameEngine::TestUtils::ScopedTempDir scratch(GameEngine::TestUtils::MakeUniqueTempDirectory("ComponentScannerSpanNames"));
+        const fs::path modules = scratch.Path() / "modules";
+        const fs::path header = modules / "Probe" / "Include" / "Probe" / "ProbeScriptApi.h";
+        fs::create_directories(header.parent_path());
+        std::ofstream(header) << "namespace GameEngine::Probe {\n"
+                                "// @ge-script\nstruct Value { float number = 0.0f; };\n"
+                                "// @ge-script\nvoid Read(std::span<const Value> values, std::uint32_t values"
+                             << suffix << ");\n}\n";
+        std::ostringstream out;
+        std::ostringstream err;
+        EXPECT_EQ(GameEngine::ComponentScanner::Run(
+                      {"--api-modules", Utf8Text(modules), "--emit-api", Utf8Text(scratch.Path() / "api"),
+                       "--emit-native", Utf8Text(scratch.Path() / "native")}, out, err), 1);
+        EXPECT_NE(err.str().find("conflicts with the binding of span `values`"), std::string::npos) << err.str();
+        EXPECT_FALSE(fs::exists(scratch.Path() / "native"));
+    }
 }

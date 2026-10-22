@@ -49,7 +49,7 @@ bool Emitted(ApiKind kind)
 
 void RefuseKind(std::vector<ApiRefusal>& refusals, const ApiSource& source, const ApiType& type, std::string_view what)
 {
-    if (Emitted(type.Kind))
+    if (Emitted(type.Kind) || IsRecordSpan(type))
         return;
     refusals.push_back({source.File, source.Line,
                         "the binding generators do not emit the " + std::string(ApiKindName(type.Kind)) + " kind (" +
@@ -178,7 +178,19 @@ std::vector<ApiRefusal> Unsupported(const ApiDescription& description)
         {
             RefuseKind(refusals, function.Source, function.Returns, "the return type of `" + function.Name + "`");
             for (const ApiParam& param : function.Params)
+            {
                 RefuseKind(refusals, function.Source, param.Type, "parameter `" + param.Name + "`");
+                if (!IsRecordSpan(param.Type))
+                    continue;
+                for (const ApiParam& other : function.Params)
+                {
+                    if (other.Name != param.Name + "Count" && other.Name != param.Name + "Data")
+                        continue;
+                    refusals.push_back({function.Source.File, function.Source.Line,
+                                        "parameter `" + other.Name + "` conflicts with the binding of span `" + param.Name + "`",
+                                        "rename the parameter; a span reserves its name followed by Count and Data"});
+                }
+            }
         }
         for (const ApiRecord& record : module.Records)
             for (const ApiField& field : record.Fields)
@@ -269,6 +281,11 @@ std::string NativeValueType(const ApiType& type, const Index& index)
     return std::string(NativeMath(type.Kind));
 }
 
+bool IsRecordSpan(const ApiType& type)
+{
+    return type.Kind == ApiKind::Span && type.Element.size() == 1 && type.Element.front().Kind == ApiKind::Record;
+}
+
 bool CrossesByPointer(const ApiType& type)
 {
     return type.Kind == ApiKind::Record || !NativeMath(type.Kind).empty();
@@ -276,6 +293,8 @@ bool CrossesByPointer(const ApiType& type)
 
 std::string NativeInType(const ApiType& type, const Index& index)
 {
+    if (IsRecordSpan(type))
+        return "const " + NativeValueType(type.Element.front(), index) + "*";
     if (type.Kind == ApiKind::Bool)
         return "std::uint8_t";
     if (type.Kind == ApiKind::Entity)
@@ -368,6 +387,8 @@ std::string CSharpConstant(std::string_view name)
 
 std::string CSharpPublicType(const ApiType& type, const Index& index)
 {
+    if (IsRecordSpan(type))
+        return "ReadOnlySpan<" + CSharpPublicType(type.Element.front(), index) + ">";
     switch (type.Kind)
     {
     case ApiKind::Void: return "void";
@@ -388,6 +409,8 @@ std::string CSharpPublicType(const ApiType& type, const Index& index)
 
 std::string CSharpInType(const ApiType& type, const Index& index)
 {
+    if (IsRecordSpan(type))
+        return CSharpPublicType(type.Element.front(), index) + "*";
     if (type.Kind == ApiKind::Bool)
         return "byte";
     if (type.Kind == ApiKind::StringId)

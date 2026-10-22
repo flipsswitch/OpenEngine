@@ -57,6 +57,16 @@ SoundOptions GetLastOptions(ProbeSystem& probe)
     return probe.LastOptions;
 }
 
+float SumVolumes(ProbeSystem& probe, std::span<const SoundOptions> options)
+{
+    (void)probe;
+    ++ProbeSystem::Calls();
+    float total = 0.0f;
+    for (const SoundOptions& option : options)
+        total += option.volume;
+    return total;
+}
+
 void Throw()
 {
     throw std::runtime_error("the probe throws");

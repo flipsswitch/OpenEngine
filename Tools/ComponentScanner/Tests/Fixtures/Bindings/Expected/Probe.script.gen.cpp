@@ -277,6 +277,37 @@ GE_Result GE_CDECL SetSpeedThunk(std::uint32_t entity, float speed)
     }
 }
 
+GE_Result GE_CDECL SumVolumesThunk(const GameEngine::Probe::SoundOptions* options, std::uint32_t optionsCount, float* outResult)
+{
+    constexpr const char* kFunction = "Probe.SumVolumes";
+    if (options == nullptr && optionsCount != 0)
+        return ::GameEngine::ScriptingAbi::RefuseNull(kFunction, "options");
+    if (outResult == nullptr)
+        return ::GameEngine::ScriptingAbi::RefuseNull(kFunction, "outResult");
+    *outResult = {};
+    try
+    {
+        ::GameEngine::EngineCore& scriptEngine = ::GameEngine::EngineCore::GetInstance();
+        if (::GameEngine::DllBootstrap::EnsureEngineInitializedFor(scriptEngine) != GE_Result_Ok)
+            return ::GameEngine::ScriptingAbi::EngineNotRunning();
+        if (!::GameEngine::ScriptingAbi::OnEngineMainThreadFor(scriptEngine))
+            return ::GameEngine::ScriptingAbi::RefuseThread(kFunction, ::GameEngine::ScriptingAbi::ThreadRule::Main);
+        ProbeSystem* scriptContext = ::GameEngine::ScriptingAbi::ScriptContext<ProbeSystem>(scriptEngine);
+        if (scriptContext == nullptr)
+            return ::GameEngine::ScriptingAbi::ContextMissing();
+        *outResult = ::GameEngine::Probe::Script::SumVolumes(*scriptContext, {options, optionsCount});
+        return GE_Result_Ok;
+    }
+    catch (const std::exception& error)
+    {
+        return ::GameEngine::ScriptingAbi::CallFailed(kFunction, error.what());
+    }
+    catch (...)
+    {
+        return ::GameEngine::ScriptingAbi::CallFailed(kFunction, "an exception that is not a std::exception");
+    }
+}
+
 GE_Result GE_CDECL ThrowThunk()
 {
     constexpr const char* kFunction = "Probe.Throw";
@@ -443,6 +474,7 @@ constexpr GE_Probe_Table_v1 kTable{
     &GameEngine::Probe::Script::PushThunk,
     &GameEngine::Probe::Script::SetFlagThunk,
     &GameEngine::Probe::Script::SetSpeedThunk,
+    &GameEngine::Probe::Script::SumVolumesThunk,
     &GameEngine::Probe::Script::ThrowThunk,
     &GameEngine::Probe::Script::TryCastThunk,
     &GameEngine::Probe::Script::TryNearestThunk,
@@ -491,6 +523,10 @@ EMSCRIPTEN_KEEPALIVE GE_Result ge_probe_set_flag(std::uint8_t on, std::int8_t le
 EMSCRIPTEN_KEEPALIVE GE_Result ge_probe_set_speed(std::uint32_t entity, float speed)
 {
     return GameEngine::Probe::Script::SetSpeedThunk(entity, speed);
+}
+EMSCRIPTEN_KEEPALIVE GE_Result ge_probe_sum_volumes(const GameEngine::Probe::SoundOptions* options, std::uint32_t optionsCount, float* outResult)
+{
+    return GameEngine::Probe::Script::SumVolumesThunk(options, optionsCount, outResult);
 }
 EMSCRIPTEN_KEEPALIVE GE_Result ge_probe_throw()
 {

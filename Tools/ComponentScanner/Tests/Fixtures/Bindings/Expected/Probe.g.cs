@@ -114,7 +114,7 @@ namespace GameEngine.Scripting
     {
         public const uint AllLayers = 4294967295u;
 
-        private static readonly BindingTable s_Table = BindingTable.Acquire("Probe", 0xEC98DC6909D46F03UL, 13);
+        private static readonly BindingTable s_Table = BindingTable.Acquire("Probe", 0x0A7E93F1F81405BDUL, 14);
         private static readonly delegate* unmanaged[Cdecl]<uint*, int> s_CallCount = (delegate* unmanaged[Cdecl]<uint*, int>)s_Table[0];
         private static readonly delegate* unmanaged[Cdecl]<SoundOptions*, int> s_GetLastOptions = (delegate* unmanaged[Cdecl]<SoundOptions*, int>)s_Table[1];
         private static readonly delegate* unmanaged[Cdecl]<Matrix4x4*, int> s_GetPose = (delegate* unmanaged[Cdecl]<Matrix4x4*, int>)s_Table[2];
@@ -123,11 +123,12 @@ namespace GameEngine.Scripting
         private static readonly delegate* unmanaged[Cdecl]<uint, Vector3*, int> s_Push = (delegate* unmanaged[Cdecl]<uint, Vector3*, int>)s_Table[5];
         private static readonly delegate* unmanaged[Cdecl]<byte, sbyte, double, int> s_SetFlag = (delegate* unmanaged[Cdecl]<byte, sbyte, double, int>)s_Table[6];
         private static readonly delegate* unmanaged[Cdecl]<uint, float, int> s_SetSpeed = (delegate* unmanaged[Cdecl]<uint, float, int>)s_Table[7];
-        private static readonly delegate* unmanaged[Cdecl]<int> s_Throw = (delegate* unmanaged[Cdecl]<int>)s_Table[8];
-        private static readonly delegate* unmanaged[Cdecl]<Vector3*, Vector3*, Hit*, float, byte*, int> s_TryCast = (delegate* unmanaged[Cdecl]<Vector3*, Vector3*, Hit*, float, byte*, int>)s_Table[9];
-        private static readonly delegate* unmanaged[Cdecl]<Vector3*, uint*, byte*, int> s_TryNearest = (delegate* unmanaged[Cdecl]<Vector3*, uint*, byte*, int>)s_Table[10];
-        private static readonly delegate* unmanaged[Cdecl]<uint, ScriptCallbackData*, ulong*, int> s_SubscribeTouched = (delegate* unmanaged[Cdecl]<uint, ScriptCallbackData*, ulong*, int>)s_Table[11];
-        private static readonly delegate* unmanaged[Cdecl]<ulong, int> s_UnsubscribeTouched = (delegate* unmanaged[Cdecl]<ulong, int>)s_Table[12];
+        private static readonly delegate* unmanaged[Cdecl]<SoundOptions*, uint, float*, int> s_SumVolumes = (delegate* unmanaged[Cdecl]<SoundOptions*, uint, float*, int>)s_Table[8];
+        private static readonly delegate* unmanaged[Cdecl]<int> s_Throw = (delegate* unmanaged[Cdecl]<int>)s_Table[9];
+        private static readonly delegate* unmanaged[Cdecl]<Vector3*, Vector3*, Hit*, float, byte*, int> s_TryCast = (delegate* unmanaged[Cdecl]<Vector3*, Vector3*, Hit*, float, byte*, int>)s_Table[10];
+        private static readonly delegate* unmanaged[Cdecl]<Vector3*, uint*, byte*, int> s_TryNearest = (delegate* unmanaged[Cdecl]<Vector3*, uint*, byte*, int>)s_Table[11];
+        private static readonly delegate* unmanaged[Cdecl]<uint, ScriptCallbackData*, ulong*, int> s_SubscribeTouched = (delegate* unmanaged[Cdecl]<uint, ScriptCallbackData*, ulong*, int>)s_Table[12];
+        private static readonly delegate* unmanaged[Cdecl]<ulong, int> s_UnsubscribeTouched = (delegate* unmanaged[Cdecl]<ulong, int>)s_Table[13];
 
         /// <summary>
         /// Counts the calls that reached the probe; on any thread.
@@ -191,6 +192,22 @@ namespace GameEngine.Scripting
             int code = s_SetFlag(on ? (byte)1 : (byte)0, level, weight);
             if (code != 0 && code != BindingErrors.NotInitialized)
                 BindingErrors.Throw(code, "Probe.SetFlag");
+        }
+
+        /// <summary>
+        /// Sum the volumes in a borrowed list. An empty list sums to zero; nothing is retained.
+        /// </summary>
+        /// <remarks>Call it on the main thread. A call from any other thread, or from a job, throws EngineCallException.</remarks>
+        public static float SumVolumes(ReadOnlySpan<SoundOptions> options)
+        {
+            fixed (SoundOptions* optionsData = options)
+            {
+                float result = default;
+                int code = s_SumVolumes(optionsData, (uint)options.Length, &result);
+                if (code != 0 && code != BindingErrors.NotInitialized)
+                    BindingErrors.Throw(code, "Probe.SumVolumes");
+                return result;
+            }
         }
 
         /// <summary>

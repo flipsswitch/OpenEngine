@@ -26,10 +26,13 @@ namespace GameEngine::ComponentScanner
 //   Enum            the enum type (its underlying type)    C# the enum
 //   Vec2 .. Mat4    const T* in, T* out                    C# System.Numerics Vector2 .. Matrix4x4
 //   Record          const T* in, T* out                    C# the record, explicit layout
+//   Span<Record>    const T* + std::uint32_t count        C# ReadOnlySpan<T>, pinned for the call
 //   Entity          std::uint32_t, the packed EntityHandle C# uint (the public type is GameEngine.Entity)
 // An out parameter and the return value cross as a pointer to the value; a Bool as a pointer
 // to one byte, an Entity as a pointer to its packed id. A null pointer is refused with
 // GE_Result_InvalidArg.
+// A span accepts null only with count zero. Its memory belongs to the caller and must not
+// be retained by the facade. Other span element kinds are not emitted yet.
 //
 // An event crosses as two table entries after the functions, in the description's order:
 //   Subscribe<Name>(std::uint32_t scope, const ScriptCallback<Payload>* callback, std::uint64_t* outSubscription)
@@ -84,6 +87,8 @@ std::string FunctionLabel(const ApiModule& module, std::string_view name);
 // The C++ type of a value of `type` ("std::int32_t", "GameEngine::Input::ActionState").
 std::string NativeValueType(const ApiType& type, const Index& index);
 // True when an in value of `type` crosses as a pointer.
+// Borrowed input spans currently emit only records, whose layout is pinned on both sides.
+bool IsRecordSpan(const ApiType& type);
 bool CrossesByPointer(const ApiType& type);
 // The C++ type an in parameter crosses as ("std::uint8_t", "const GameEngine::Input::ActionBinding*").
 std::string NativeInType(const ApiType& type, const Index& index);

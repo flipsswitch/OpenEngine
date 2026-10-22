@@ -277,3 +277,28 @@ TEST_F(ScriptBindings, ExceptionIsCaughtAsFail)
 
     EXPECT_NE(LastError().find("Probe.Throw failed: the probe throws"), std::string::npos) << LastError();
 }
+
+TEST_F(ScriptBindings, BorrowedRecordSpanPassesEveryElementAndAllowsEmpty)
+{
+    const GE_Probe_Table_v1& table = Table();
+    SoundOptions options[2];
+    options[0].volume = 0.25f;
+    options[1].volume = 0.75f;
+    float total = -1.0f;
+    ASSERT_EQ(table.SumVolumes(options, 2, &total), GE_Result_Ok);
+    EXPECT_FLOAT_EQ(total, 1.0f);
+    ASSERT_EQ(table.SumVolumes(nullptr, 0, &total), GE_Result_Ok);
+    EXPECT_FLOAT_EQ(total, 0.0f);
+    ASSERT_EQ(table.SumVolumes(options, 0, &total), GE_Result_Ok);
+    EXPECT_FLOAT_EQ(total, 0.0f);
+}
+
+TEST_F(ScriptBindings, RecordSpanRefusesNullWithNonzeroCountBeforeCallingTheFacade)
+{
+    const GE_Probe_Table_v1& table = Table();
+    const std::uint32_t calls = ProbeSystem::Calls().load();
+    float total = -1.0f;
+    EXPECT_EQ(table.SumVolumes(nullptr, 1, &total), GE_Result_InvalidArg);
+    EXPECT_EQ(table.SumVolumes(nullptr, 0, nullptr), GE_Result_InvalidArg);
+    EXPECT_EQ(ProbeSystem::Calls().load(), calls);
+}
