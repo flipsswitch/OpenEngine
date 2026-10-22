@@ -504,3 +504,31 @@ TEST(CancellableShellProcessTests, ArgvRunKillMidRunEndsTheChildPromptly)
     EXPECT_NE(result.exitCode, 0);
     EXPECT_LT(elapsed, std::chrono::seconds(10));  // the probe sleeps 30 s unless killed
 }
+
+TEST(CancellableShellProcessTests, ArgvRunReportsKillAfterTheOutputStreamsClose)
+{
+    CancellableShellProcess proc;
+    std::atomic<bool> started{false};
+    std::thread killer([&] {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!started.load() && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        // Let Run drain the closed pipes before killing the child it is waiting for.
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        proc.Kill();
+    });
+    const auto begin = std::chrono::steady_clock::now();
+
+    const ShellProcessResult result = proc.Run(ProbeLaunch({"sleep-closed-streams"}), NeverCancel,
+        [&started](const std::string&) { started.store(true); });
+    killer.join();
+
+    EXPECT_TRUE(started.load());
+    EXPECT_TRUE(result.cancelled);
+    EXPECT_NE(result.exitCode, 0);
+    EXPECT_LT(std::chrono::steady_clock::now() - begin, std::chrono::seconds(10));
+
+    const ShellProcessResult next = proc.Run(ProbeLaunch({"streams"}), NeverCancel, nullptr);
+    EXPECT_EQ(next.exitCode, 0);
+    EXPECT_FALSE(next.cancelled);
+}
