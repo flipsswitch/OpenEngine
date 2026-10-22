@@ -30,7 +30,7 @@ struct ApiLookup
 };
 
 // How a parameter is passed: by value or `const T&` (in), or `T&` (out, written by the
-// function). A pointer is refused.
+// function), or a span whose elements are const (in) or writable (out). A pointer is refused.
 struct ApiParamShape
 {
     ApiType Type;

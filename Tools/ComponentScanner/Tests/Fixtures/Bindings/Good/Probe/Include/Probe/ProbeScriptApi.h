@@ -12,6 +12,7 @@
 #include "Types/StringId.h"
 
 #include <cstdint>
+#include <span>
 
 namespace GameEngine::Probe
 {
@@ -120,6 +121,10 @@ void SetSpeed(ProbeSystem& probe, ECS::EntityHandle entity, float speed);
 /// Finds the entity nearest to a point.
 // @ge-script @ge-script-try @ge-context
 bool TryNearest(ProbeSystem& probe, Mathematics::Vector3 point, ECS::EntityHandle& outEntity);
+
+/// Writes up to two hits into the caller's buffer and returns the number written.
+// @ge-script @ge-context
+std::int32_t FillHits(ProbeSystem& probe, std::span<Hit> hits);
 
 /// Calls the handler when the entity touches another.
 // @ge-script-event PhysicsStep

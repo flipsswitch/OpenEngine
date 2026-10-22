@@ -15,6 +15,7 @@ struct GE_Probe_Table_v1
     uint32_t format;
     uint64_t hash;
     GE_Result(GE_CDECL* CallCount)(std::uint32_t*);
+    GE_Result(GE_CDECL* FillHits)(GameEngine::Probe::Hit*, std::int32_t, std::int32_t*);
     GE_Result(GE_CDECL* GetLastOptions)(GameEngine::Probe::SoundOptions*);
     GE_Result(GE_CDECL* GetPose)(GameEngine::Mathematics::Matrix4x4*);
     GE_Result(GE_CDECL* GetSpeed)(std::uint32_t, float*);
@@ -30,7 +31,7 @@ struct GE_Probe_Table_v1
 };
 
 // The FNV-1a 64 of the Probe description's canonical form: the one version of the table.
-inline constexpr uint64_t GE_Probe_Hash = 0xec98dc6909d46f03ull;
+inline constexpr uint64_t GE_Probe_Hash = 0x39782ec547aa1e6aull;
 
 // Serves the table to a caller whose hash is GE_Probe_Hash. Any other hash is refused with
 // GE_Result_InvalidArg and a last error that names both hashes; the table is never served to a caller built

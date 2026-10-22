@@ -277,3 +277,52 @@ TEST_F(ScriptBindings, ExceptionIsCaughtAsFail)
 
     EXPECT_NE(LastError().find("Probe.Throw failed: the probe throws"), std::string::npos) << LastError();
 }
+
+TEST_F(ScriptBindings, OutputBufferWritesOnlyItsReturnedPrefix)
+{
+    Hit hits[4];
+    for (Hit& hit : hits)
+        hit.distance = -1.0f;
+    std::int32_t count = -1;
+
+    ASSERT_EQ(Table().FillHits(hits + 1, 2, &count), GE_Result_Ok);
+    EXPECT_EQ(count, 2);
+    EXPECT_EQ(hits[0].distance, -1.0f);
+    EXPECT_EQ(hits[1].distance, 1.0f);
+    EXPECT_EQ(hits[2].distance, 2.0f);
+    EXPECT_EQ(hits[3].distance, -1.0f);
+    ASSERT_EQ(Table().FillHits(hits, 1, &count), GE_Result_Ok);
+    EXPECT_EQ(count, 1);
+}
+
+TEST_F(ScriptBindings, EmptyOutputBufferAllowsANullPointer)
+{
+    std::int32_t count = -1;
+    ASSERT_EQ(Table().FillHits(nullptr, 0, &count), GE_Result_Ok);
+    EXPECT_EQ(count, 0);
+}
+
+TEST_F(ScriptBindings, InvalidOutputBufferIsRefusedBeforeTheCall)
+{
+    const std::uint32_t calls = ProbeSystem::Calls().load();
+    std::int32_t count = -1;
+    Hit hit;
+    EXPECT_EQ(Table().FillHits(nullptr, 1, &count), GE_Result_InvalidArg);
+    EXPECT_NE(LastError().find("Probe.FillHits: `hits` is a null pointer"), std::string::npos);
+    EXPECT_EQ(Table().FillHits(&hit, -1, &count), GE_Result_InvalidArg);
+    EXPECT_NE(LastError().find("Probe.FillHits: `hitsCount` is negative"), std::string::npos);
+    EXPECT_EQ(Table().FillHits(&hit, 1, nullptr), GE_Result_InvalidArg);
+    EXPECT_EQ(ProbeSystem::Calls().load(), calls);
+}
+
+TEST_F(ScriptBindings, MissingContextLeavesTheOutputBufferUntouched)
+{
+    ProbeSystem::Current() = nullptr;
+    Hit hit;
+    hit.distance = -1.0f;
+    std::int32_t count = -1;
+
+    EXPECT_EQ(Table().FillHits(&hit, 1, &count), GE_Result_NotInitialized);
+    EXPECT_EQ(count, 0);
+    EXPECT_EQ(hit.distance, -1.0f);
+}

@@ -7,10 +7,12 @@
 // in newton seconds; +Y is up.
 
 #include "ECS/ECS.h"
+#include "Mathematics/Quaternion.h"
 #include "Mathematics/Vector3.h"
 #include "Types/ScriptCallback.h"
 
 #include <cstdint>
+#include <span>
 
 namespace GameEngine::ECS
 {
@@ -67,6 +69,24 @@ struct TriggerEvent
 // @ge-script @ge-script-try @ge-context
 bool RayCast(Physics::PhysicsWorld& physics, Mathematics::Vector3 origin, Mathematics::Vector3 direction, RayHit& hit,
              float maxDistance = 1000.0f, std::uint32_t layerMask = kAllLayers, bool ignoreTriggers = false);
+
+/// Writes the nearest ray hits into results, nearest first, at most one per body. Returns the number
+/// written; entries after that count are unchanged. The buffer length caps the result count. The
+/// direction need not be of length 1. Distances are in meters. Only layers in layerMask are seen;
+/// ignoreTriggers excludes triggers. Returns zero outside play mode or for an invalid ray.
+// @ge-script @ge-context
+std::int32_t RayCastAll(Physics::PhysicsWorld& physics, Mathematics::Vector3 origin, Mathematics::Vector3 direction,
+                        std::span<RayHit> results, float maxDistance = 1000.0f,
+                        std::uint32_t layerMask = kAllLayers, bool ignoreTriggers = false);
+
+/// Writes the entities whose bodies overlap the oriented box into results, at most one per body.
+/// Returns the number written, capped by the buffer length; later entries are unchanged. Center and
+/// half extents are in meters. Only layers in layerMask are seen; ignoreTriggers excludes triggers.
+/// Returns zero outside play mode. Results have no distance ordering.
+// @ge-script @ge-context
+std::int32_t BoxOverlap(Physics::PhysicsWorld& physics, Mathematics::Vector3 center, Mathematics::Vector3 halfExtents,
+                        Mathematics::Quaternion rotation, std::span<ECS::EntityHandle> results,
+                        std::uint32_t layerMask = kAllLayers, bool ignoreTriggers = false);
 
 /// The velocity of the entity's body. Zero for an entity with no PhysicsBody, and outside play mode.
 // @ge-script @ge-context

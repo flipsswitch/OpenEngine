@@ -2,6 +2,7 @@
 // with every kind of the table, and the named refusal of each declaration the vocabulary does
 // not allow. The expected files are the scanner's committed output for Fixtures/ScriptApi/Good.
 #include "ComponentScanner.h"
+#include "ApiKindResolver.h"
 
 #include "TestTempDir.h"
 
@@ -169,4 +170,43 @@ TEST(ScriptApi, RunsAsItsOwnInvocation)
                                                     "--in", Utf8Text(kFixture)},
                                                    out, err));
     EXPECT_NE(std::string::npos, err.str().find("--emit-api <dir> takes --api-modules <dir>"));
+}
+
+TEST(ScriptApi, MutableSpanIsACallerOwnedOutputBuffer)
+{
+    using namespace GameEngine::ComponentScanner;
+    const std::vector<ApiNamedType> named;
+    DeclarationProblem problem;
+    const auto parameter = ApiKindResolver::ResolveParameter("std::span<float>", {named, ""}, problem);
+
+    ASSERT_TRUE(parameter.has_value()) << problem.Problem;
+    EXPECT_EQ(parameter->Type.Kind, ApiKind::Span);
+    EXPECT_TRUE(parameter->Out);
+    ASSERT_EQ(parameter->Type.Element.size(), 1u);
+    EXPECT_EQ(parameter->Type.Element.front().Kind, ApiKind::Float);
+}
+
+TEST(ScriptApi, ConstSpanRemainsAnInputBuffer)
+{
+    using namespace GameEngine::ComponentScanner;
+    const std::vector<ApiNamedType> named;
+    DeclarationProblem problem;
+    const auto parameter = ApiKindResolver::ResolveParameter("std::span<const float>", {named, ""}, problem);
+
+    ASSERT_TRUE(parameter.has_value()) << problem.Problem;
+    EXPECT_FALSE(parameter->Out);
+    ASSERT_EQ(parameter->Type.Element.size(), 1u);
+    EXPECT_EQ(parameter->Type.Element.front().Kind, ApiKind::Float);
+}
+TEST(ScriptApi, OutputBuffersRefuseInvalidElementAndExtentTypes)
+{
+    using namespace GameEngine::ComponentScanner;
+    const std::vector<ApiNamedType> named;
+    for (const char* text : {"std::span<void>", "std::span<std::string_view>", "std::span<std::span<float>>",
+                             "std::span<float, 4>", "std::span<float>&"})
+    {
+        DeclarationProblem problem;
+        EXPECT_FALSE(ApiKindResolver::ResolveParameter(text, {named, ""}, problem).has_value()) << text;
+        EXPECT_FALSE(problem.Problem.empty()) << text;
+    }
 }

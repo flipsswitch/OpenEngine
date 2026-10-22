@@ -77,6 +77,39 @@ GE_Result GE_CDECL CallCountThunk(std::uint32_t* outResult)
     }
 }
 
+GE_Result GE_CDECL FillHitsThunk(GameEngine::Probe::Hit* hits, std::int32_t hitsCount, std::int32_t* outResult)
+{
+    constexpr const char* kFunction = "Probe.FillHits";
+    if (hitsCount < 0)
+        return ::GameEngine::ScriptingAbi::RefuseNegativeCount(kFunction, "hitsCount");
+    if (hitsCount != 0 && hits == nullptr)
+        return ::GameEngine::ScriptingAbi::RefuseNull(kFunction, "hits");
+    if (outResult == nullptr)
+        return ::GameEngine::ScriptingAbi::RefuseNull(kFunction, "outResult");
+    *outResult = {};
+    try
+    {
+        ::GameEngine::EngineCore& scriptEngine = ::GameEngine::EngineCore::GetInstance();
+        if (::GameEngine::DllBootstrap::EnsureEngineInitializedFor(scriptEngine) != GE_Result_Ok)
+            return ::GameEngine::ScriptingAbi::EngineNotRunning();
+        if (!::GameEngine::ScriptingAbi::OnEngineMainThreadFor(scriptEngine))
+            return ::GameEngine::ScriptingAbi::RefuseThread(kFunction, ::GameEngine::ScriptingAbi::ThreadRule::Main);
+        ProbeSystem* scriptContext = ::GameEngine::ScriptingAbi::ScriptContext<ProbeSystem>(scriptEngine);
+        if (scriptContext == nullptr)
+            return ::GameEngine::ScriptingAbi::ContextMissing();
+        *outResult = ::GameEngine::Probe::Script::FillHits(*scriptContext, std::span(hits, static_cast<std::size_t>(hitsCount)));
+        return GE_Result_Ok;
+    }
+    catch (const std::exception& error)
+    {
+        return ::GameEngine::ScriptingAbi::CallFailed(kFunction, error.what());
+    }
+    catch (...)
+    {
+        return ::GameEngine::ScriptingAbi::CallFailed(kFunction, "an exception that is not a std::exception");
+    }
+}
+
 GE_Result GE_CDECL GetLastOptionsThunk(GameEngine::Probe::SoundOptions* outResult)
 {
     constexpr const char* kFunction = "Probe.GetLastOptions";
@@ -436,6 +469,7 @@ constexpr GE_Probe_Table_v1 kTable{
     1u,
     GE_Probe_Hash,
     &GameEngine::Probe::Script::CallCountThunk,
+    &GameEngine::Probe::Script::FillHitsThunk,
     &GameEngine::Probe::Script::GetLastOptionsThunk,
     &GameEngine::Probe::Script::GetPoseThunk,
     &GameEngine::Probe::Script::GetSpeedThunk,
@@ -463,6 +497,10 @@ extern "C"
 EMSCRIPTEN_KEEPALIVE GE_Result ge_probe_call_count(std::uint32_t* outResult)
 {
     return GameEngine::Probe::Script::CallCountThunk(outResult);
+}
+EMSCRIPTEN_KEEPALIVE GE_Result ge_probe_fill_hits(GameEngine::Probe::Hit* hits, std::int32_t hitsCount, std::int32_t* outResult)
+{
+    return GameEngine::Probe::Script::FillHitsThunk(hits, hitsCount, outResult);
 }
 EMSCRIPTEN_KEEPALIVE GE_Result ge_probe_get_last_options(GameEngine::Probe::SoundOptions* outResult)
 {

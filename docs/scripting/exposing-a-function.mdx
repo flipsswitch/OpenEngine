@@ -56,12 +56,15 @@ The function table carries the module's hash. A C# binding built from another de
 | `Mathematics::Vector2`, `Vector3`, `Vector4`, `Quaternion`, `Matrix4x4` | `System.Numerics` `Vector2`, `Vector3`, `Vector4`, `Quaternion`, `Matrix4x4` | a pointer to the bytes, unchanged |
 | `ECS::EntityHandle` | `GameEngine.Entity` | the packed 32-bit entity id |
 | a marked `struct` (a record) | a struct with the same field offsets and the same field defaults | a pointer to the bytes |
+| `std::span<T>` with writable elements | `System.Span<T>` | a pointer to the elements and a signed 32-bit count; pinned for the call |
 
 A function's return value and its out parameter (`T&`) cross as a pointer the thunk writes. A parameter with a default becomes an optional C# parameter; a record parameter with the default `{}` becomes `T? name = null`, which takes the record's own defaults. A `bool` function marked `@ge-script-try` with one out parameter is `bool TryX(..., out T)` in C#.
 
 A function whose first parameter, after the context, is an entity is a method of the module's view of an entity in C#, not a static method: `SetLinearVelocity(ECS::World&, ECS::EntityHandle, Vector3)` is `ball.Physics.SetLinearVelocity(v)`. A `Get` and `Set` pair stays two methods, because C# refuses to assign a property of a view that an expression returns.
 
-The generators do not emit a `String`, `Span`, `ColorLinear` or handle kind, an event scoped to a handle, or an event with `@ge-context`. A marked declaration that uses one fails the build.
+A writable span takes the caller's buffer by value. Its element type must be one of the value kinds the generators emit. An empty buffer may have a null pointer; a negative count or a null pointer with a nonzero count is refused. The thunk leaves the buffer untouched when its context is missing. The function documents how many elements it writes and must not retain the buffer.
+
+The generators do not emit a `String`, a read-only `Span`, a `ColorLinear` or handle kind, an event scoped to a handle, or an event with `@ge-context`. A marked declaration that uses one fails the build.
 
 ## A record
 
@@ -131,3 +134,7 @@ The exception carries the engine's text for the failure, which names the functio
 | `@ge-any-thread` | any thread | nothing |
 
 The C# documentation of every generated call states its rule. A refusal logs one line per function per process.
+
+## Changelog
+
+- Added generated bindings for writable result spans.

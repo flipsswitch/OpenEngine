@@ -95,25 +95,43 @@ namespace GameEngine.Scripting
     {
         public const uint AllLayers = 4294967295u;
 
-        private static readonly BindingTable s_Table = BindingTable.Acquire("Physics", 0x3D7A04F97EDCF881UL, 18);
+        private static readonly BindingTable s_Table = BindingTable.Acquire("Physics", 0x9F839411C7C34810UL, 20);
         private static readonly delegate* unmanaged[Cdecl]<uint, Vector3*, int> s_AddImpulse = (delegate* unmanaged[Cdecl]<uint, Vector3*, int>)s_Table[0];
         private static readonly delegate* unmanaged[Cdecl]<uint, Vector3*, Vector3*, int> s_AddImpulseAtPosition = (delegate* unmanaged[Cdecl]<uint, Vector3*, Vector3*, int>)s_Table[1];
-        private static readonly delegate* unmanaged[Cdecl]<uint, Vector3*, int> s_GetAngularVelocity = (delegate* unmanaged[Cdecl]<uint, Vector3*, int>)s_Table[2];
-        private static readonly delegate* unmanaged[Cdecl]<uint, Vector3*, int> s_GetDesiredVelocity = (delegate* unmanaged[Cdecl]<uint, Vector3*, int>)s_Table[3];
-        private static readonly delegate* unmanaged[Cdecl]<uint, Vector3*, int> s_GetLinearVelocity = (delegate* unmanaged[Cdecl]<uint, Vector3*, int>)s_Table[4];
-        private static readonly delegate* unmanaged[Cdecl]<uint, byte*, int> s_IsGrounded = (delegate* unmanaged[Cdecl]<uint, byte*, int>)s_Table[5];
-        private static readonly delegate* unmanaged[Cdecl]<Vector3*, Vector3*, RayHit*, float, uint, byte, byte*, int> s_RayCast = (delegate* unmanaged[Cdecl]<Vector3*, Vector3*, RayHit*, float, uint, byte, byte*, int>)s_Table[6];
-        private static readonly delegate* unmanaged[Cdecl]<uint, Vector3*, int> s_SetAngularVelocity = (delegate* unmanaged[Cdecl]<uint, Vector3*, int>)s_Table[7];
-        private static readonly delegate* unmanaged[Cdecl]<uint, Vector3*, int> s_SetDesiredVelocity = (delegate* unmanaged[Cdecl]<uint, Vector3*, int>)s_Table[8];
-        private static readonly delegate* unmanaged[Cdecl]<uint, Vector3*, int> s_SetLinearVelocity = (delegate* unmanaged[Cdecl]<uint, Vector3*, int>)s_Table[9];
-        private static readonly delegate* unmanaged[Cdecl]<uint, ScriptCallbackData*, ulong*, int> s_SubscribeContactBegin = (delegate* unmanaged[Cdecl]<uint, ScriptCallbackData*, ulong*, int>)s_Table[10];
-        private static readonly delegate* unmanaged[Cdecl]<ulong, int> s_UnsubscribeContactBegin = (delegate* unmanaged[Cdecl]<ulong, int>)s_Table[11];
-        private static readonly delegate* unmanaged[Cdecl]<uint, ScriptCallbackData*, ulong*, int> s_SubscribeContactEnd = (delegate* unmanaged[Cdecl]<uint, ScriptCallbackData*, ulong*, int>)s_Table[12];
-        private static readonly delegate* unmanaged[Cdecl]<ulong, int> s_UnsubscribeContactEnd = (delegate* unmanaged[Cdecl]<ulong, int>)s_Table[13];
-        private static readonly delegate* unmanaged[Cdecl]<uint, ScriptCallbackData*, ulong*, int> s_SubscribeTriggerEnter = (delegate* unmanaged[Cdecl]<uint, ScriptCallbackData*, ulong*, int>)s_Table[14];
-        private static readonly delegate* unmanaged[Cdecl]<ulong, int> s_UnsubscribeTriggerEnter = (delegate* unmanaged[Cdecl]<ulong, int>)s_Table[15];
-        private static readonly delegate* unmanaged[Cdecl]<uint, ScriptCallbackData*, ulong*, int> s_SubscribeTriggerExit = (delegate* unmanaged[Cdecl]<uint, ScriptCallbackData*, ulong*, int>)s_Table[16];
-        private static readonly delegate* unmanaged[Cdecl]<ulong, int> s_UnsubscribeTriggerExit = (delegate* unmanaged[Cdecl]<ulong, int>)s_Table[17];
+        private static readonly delegate* unmanaged[Cdecl]<Vector3*, Vector3*, Quaternion*, Entity*, int, uint, byte, int*, int> s_BoxOverlap = (delegate* unmanaged[Cdecl]<Vector3*, Vector3*, Quaternion*, Entity*, int, uint, byte, int*, int>)s_Table[2];
+        private static readonly delegate* unmanaged[Cdecl]<uint, Vector3*, int> s_GetAngularVelocity = (delegate* unmanaged[Cdecl]<uint, Vector3*, int>)s_Table[3];
+        private static readonly delegate* unmanaged[Cdecl]<uint, Vector3*, int> s_GetDesiredVelocity = (delegate* unmanaged[Cdecl]<uint, Vector3*, int>)s_Table[4];
+        private static readonly delegate* unmanaged[Cdecl]<uint, Vector3*, int> s_GetLinearVelocity = (delegate* unmanaged[Cdecl]<uint, Vector3*, int>)s_Table[5];
+        private static readonly delegate* unmanaged[Cdecl]<uint, byte*, int> s_IsGrounded = (delegate* unmanaged[Cdecl]<uint, byte*, int>)s_Table[6];
+        private static readonly delegate* unmanaged[Cdecl]<Vector3*, Vector3*, RayHit*, float, uint, byte, byte*, int> s_RayCast = (delegate* unmanaged[Cdecl]<Vector3*, Vector3*, RayHit*, float, uint, byte, byte*, int>)s_Table[7];
+        private static readonly delegate* unmanaged[Cdecl]<Vector3*, Vector3*, RayHit*, int, float, uint, byte, int*, int> s_RayCastAll = (delegate* unmanaged[Cdecl]<Vector3*, Vector3*, RayHit*, int, float, uint, byte, int*, int>)s_Table[8];
+        private static readonly delegate* unmanaged[Cdecl]<uint, Vector3*, int> s_SetAngularVelocity = (delegate* unmanaged[Cdecl]<uint, Vector3*, int>)s_Table[9];
+        private static readonly delegate* unmanaged[Cdecl]<uint, Vector3*, int> s_SetDesiredVelocity = (delegate* unmanaged[Cdecl]<uint, Vector3*, int>)s_Table[10];
+        private static readonly delegate* unmanaged[Cdecl]<uint, Vector3*, int> s_SetLinearVelocity = (delegate* unmanaged[Cdecl]<uint, Vector3*, int>)s_Table[11];
+        private static readonly delegate* unmanaged[Cdecl]<uint, ScriptCallbackData*, ulong*, int> s_SubscribeContactBegin = (delegate* unmanaged[Cdecl]<uint, ScriptCallbackData*, ulong*, int>)s_Table[12];
+        private static readonly delegate* unmanaged[Cdecl]<ulong, int> s_UnsubscribeContactBegin = (delegate* unmanaged[Cdecl]<ulong, int>)s_Table[13];
+        private static readonly delegate* unmanaged[Cdecl]<uint, ScriptCallbackData*, ulong*, int> s_SubscribeContactEnd = (delegate* unmanaged[Cdecl]<uint, ScriptCallbackData*, ulong*, int>)s_Table[14];
+        private static readonly delegate* unmanaged[Cdecl]<ulong, int> s_UnsubscribeContactEnd = (delegate* unmanaged[Cdecl]<ulong, int>)s_Table[15];
+        private static readonly delegate* unmanaged[Cdecl]<uint, ScriptCallbackData*, ulong*, int> s_SubscribeTriggerEnter = (delegate* unmanaged[Cdecl]<uint, ScriptCallbackData*, ulong*, int>)s_Table[16];
+        private static readonly delegate* unmanaged[Cdecl]<ulong, int> s_UnsubscribeTriggerEnter = (delegate* unmanaged[Cdecl]<ulong, int>)s_Table[17];
+        private static readonly delegate* unmanaged[Cdecl]<uint, ScriptCallbackData*, ulong*, int> s_SubscribeTriggerExit = (delegate* unmanaged[Cdecl]<uint, ScriptCallbackData*, ulong*, int>)s_Table[18];
+        private static readonly delegate* unmanaged[Cdecl]<ulong, int> s_UnsubscribeTriggerExit = (delegate* unmanaged[Cdecl]<ulong, int>)s_Table[19];
+
+        /// <summary>
+        /// Writes the entities whose bodies overlap the oriented box into results, at most one per body. Returns the number written, capped by the buffer length; later entries are unchanged. Center and half extents are in meters. Only layers in layerMask are seen; ignoreTriggers excludes triggers. Returns zero outside play mode. Results have no distance ordering.
+        /// </summary>
+        /// <remarks>Call it on the main thread. A call from any other thread, or from a job, throws EngineCallException.</remarks>
+        public static int BoxOverlap(Vector3 center, Vector3 halfExtents, Quaternion rotation, System.Span<Entity> results, uint layerMask = Physics.AllLayers, bool ignoreTriggers = false)
+        {
+            int result = default;
+            fixed (Entity* resultsPointer = results)
+            {
+                int code = s_BoxOverlap(&center, &halfExtents, &rotation, resultsPointer, results.Length, layerMask, ignoreTriggers ? (byte)1 : (byte)0, &result);
+                if (code != 0 && code != BindingErrors.NotInitialized)
+                    BindingErrors.Throw(code, "Physics.BoxOverlap");
+                return result;
+            }
+        }
 
         /// <summary>
         /// Casts a ray and finds the nearest body it hits within maxDistance. False when it hits nothing, and outside play mode. The direction need not be of length 1. Only bodies on a layer of layerMask are hit; triggers are hit unless ignoreTriggers is true.
@@ -128,6 +146,22 @@ namespace GameEngine.Scripting
                 BindingErrors.Throw(code, "Physics.RayCast");
             hit = hitValue;
             return result != 0;
+        }
+
+        /// <summary>
+        /// Writes the nearest ray hits into results, nearest first, at most one per body. Returns the number written; entries after that count are unchanged. The buffer length caps the result count. The direction need not be of length 1. Distances are in meters. Only layers in layerMask are seen; ignoreTriggers excludes triggers. Returns zero outside play mode or for an invalid ray.
+        /// </summary>
+        /// <remarks>Call it on the main thread. A call from any other thread, or from a job, throws EngineCallException.</remarks>
+        public static int RayCastAll(Vector3 origin, Vector3 direction, System.Span<RayHit> results, float maxDistance = 1000f, uint layerMask = Physics.AllLayers, bool ignoreTriggers = false)
+        {
+            int result = default;
+            fixed (RayHit* resultsPointer = results)
+            {
+                int code = s_RayCastAll(&origin, &direction, resultsPointer, results.Length, maxDistance, layerMask, ignoreTriggers ? (byte)1 : (byte)0, &result);
+                if (code != 0 && code != BindingErrors.NotInitialized)
+                    BindingErrors.Throw(code, "Physics.RayCastAll");
+                return result;
+            }
         }
 
         private static void SubscribeContactBegin(Entity scope, ContactEventHandler? handler)

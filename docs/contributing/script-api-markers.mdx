@@ -76,11 +76,11 @@ A parameter, a return value, or a record field must be of a kind in this table. 
 | `Entity` | `ECS::EntityHandle` | The packed 32-bit entity id. |
 | `StringId` | `StringId` | The 64-bit hash of a name. |
 | `String` | `std::string_view` | In parameters only. UTF-8. |
-| `Span` | `std::span<const T>` | In parameters only. `T` is a value kind or a record. |
+| `Span` | `std::span<const T>` or `std::span<T>` | Parameters only. Const elements are input; writable elements are an output buffer. `T` is a value kind or a record. |
 | `Record`, `Enum`, `Handle` | a type marked in a script API header | |
 | `Void` | `void` | A return type only. |
 
-A parameter passes in by value or as `const T&`. A `T&` parameter is an out parameter, which the function writes. A pointer parameter (`T*` or `const T*`) is refused. A function has one out parameter at most, and the out parameter comes before every parameter with a default.
+A parameter passes in by value or as `const T&`. A `T&` parameter is an out parameter, which the function writes. A dynamic `std::span<T>` with writable elements also counts as an out parameter: the caller owns its storage, and the function writes its elements without retaining the span. Pass that span by value. A pointer parameter (`T*` or `const T*`) is refused. A function has one out parameter at most, and the out parameter comes before every parameter with a default.
 
 ### Defaults
 
@@ -135,3 +135,7 @@ cmake --build --preset vs2026-x64-local --target UpdateEngineApi
 ```
 
 `ApiDescriptionDriftTests`, in `ComponentScannerTests`, fails while a committed file differs from a fresh scan, and names the module file. The diff of `Engine/Scripting/engine-api/<Name>.json` in a pull request shows the change to that module's script API.
+
+## Changelog
+
+- Added generated bindings for writable result spans.

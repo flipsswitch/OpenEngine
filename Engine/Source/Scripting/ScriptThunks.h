@@ -68,6 +68,9 @@ enum class ThreadRule : std::uint8_t
 /// Refuses a null pointer argument (`parameter` is its name, or "outResult" for the return value).
 GE_Result RefuseNull(const char* function, const char* parameter);
 
+/// Refuses a buffer length below zero.
+GE_Result RefuseNegativeCount(const char* function, const char* parameter);
+
 /// Refuses a StringId argument of 0, which names no id.
 GE_Result RefuseZeroId(const char* function, const char* parameter);
 

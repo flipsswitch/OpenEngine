@@ -178,7 +178,11 @@ std::vector<ApiRefusal> Unsupported(const ApiDescription& description)
         {
             RefuseKind(refusals, function.Source, function.Returns, "the return type of `" + function.Name + "`");
             for (const ApiParam& param : function.Params)
-                RefuseKind(refusals, function.Source, param.Type, "parameter `" + param.Name + "`");
+            {
+                const ApiType& crossing = param.Type.Kind == ApiKind::Span && param.Out
+                                              ? param.Type.Element.front() : param.Type;
+                RefuseKind(refusals, function.Source, crossing, "parameter `" + param.Name + "`");
+            }
         }
         for (const ApiRecord& record : module.Records)
             for (const ApiField& field : record.Fields)
@@ -287,6 +291,8 @@ std::string NativeInType(const ApiType& type, const Index& index)
 
 std::string NativeOutType(const ApiType& type, const Index& index)
 {
+    if (type.Kind == ApiKind::Span)
+        return NativeValueType(type.Element.front(), index) + "*";
     if (type.Kind == ApiKind::Bool)
         return "std::uint8_t*";
     if (type.Kind == ApiKind::Entity)
@@ -368,6 +374,8 @@ std::string CSharpConstant(std::string_view name)
 
 std::string CSharpPublicType(const ApiType& type, const Index& index)
 {
+    if (type.Kind == ApiKind::Span)
+        return "System.Span<" + CSharpPublicType(type.Element.front(), index) + ">";
     switch (type.Kind)
     {
     case ApiKind::Void: return "void";

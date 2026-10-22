@@ -104,7 +104,12 @@ std::string PointerType(const ApiFunction& function, const Index& index)
 {
     std::string text = "delegate* unmanaged[Cdecl]<";
     for (const ApiParam& param : function.Params)
-        text += (param.Out ? CSharpSlotType(param.Type, index) + "*" : CSharpInType(param.Type, index)) + ", ";
+    {
+        if (param.Type.Kind == ApiKind::Span)
+            text += CSharpPublicType(param.Type.Element.front(), index) + "*, int, ";
+        else
+            text += (param.Out ? CSharpSlotType(param.Type, index) + "*" : CSharpInType(param.Type, index)) + ", ";
+    }
     if (function.Returns.Kind != ApiKind::Void)
         text += CSharpSlotType(function.Returns, index) + "*, ";
     return text + "int>";
@@ -130,7 +135,7 @@ std::string Signature(const ApiFunction& function, const Index& index, bool memb
     {
         if (!text.empty())
             text += ", ";
-        if (param->Out)
+        if (param->Out && param->Type.Kind != ApiKind::Span)
             text += "out ";
         if (IsRecordDefault(*param))
         {
@@ -158,6 +163,8 @@ std::string NameOf(const ApiParam& param, const Names& names)
 std::string ArgumentFor(const ApiParam& param, const Names& names)
 {
     const std::string name = NameOf(param, names);
+    if (param.Type.Kind == ApiKind::Span)
+        return param.Name + "Pointer, " + name + ".Length";
     if (param.Out || IsRecordDefault(param))
         return "&" + Local(param);
     switch (param.Type.Kind)
@@ -189,14 +196,14 @@ std::string FromSlot(const ApiType& type, const std::string& slot)
 void EmitBody(std::string& out, const ApiModule& module, const ApiFunction& function, const Index& index, std::string_view indent,
               const Names& names)
 {
-    const std::string pad(indent);
+    std::string pad(indent);
     std::string arguments;
     for (const ApiParam& param : function.Params)
     {
         if (IsRecordDefault(param))
             out += pad + CSharpPublicType(param.Type, index) + " " + Local(param) + " = " + NameOf(param, names) + " ?? new " +
                    CSharpPublicType(param.Type, index) + "();\n";
-        else if (param.Out)
+        else if (param.Out && param.Type.Kind != ApiKind::Span)
             out += pad + CSharpSlotType(param.Type, index) + " " + Local(param) + " = " + CSharpSlotDefault(param.Type) + ";\n";
         arguments += (arguments.empty() ? "" : ", ") + ArgumentFor(param, names);
     }
@@ -206,14 +213,29 @@ void EmitBody(std::string& out, const ApiModule& module, const ApiFunction& func
         out += pad + CSharpSlotType(function.Returns, index) + " result = " + CSharpSlotDefault(function.Returns) + ";\n";
         arguments += std::string(arguments.empty() ? "" : ", ") + "&result";
     }
+    for (const ApiParam& param : function.Params)
+    {
+        if (param.Type.Kind != ApiKind::Span)
+            continue;
+        out += pad + "fixed (" + CSharpPublicType(param.Type.Element.front(), index) + "* " + param.Name +
+               "Pointer = " + NameOf(param, names) + ")\n" + pad + "{\n";
+        pad += "    ";
+    }
     out += pad + "int code = " + CSharpPointerField(function.Name) + "(" + arguments + ");\n";
     out += pad + "if (code != 0 && code != BindingErrors.NotInitialized)\n" + pad + "    BindingErrors.Throw(code, \"" +
            FunctionLabel(module, function.Name) + "\");\n";
     for (const ApiParam& param : function.Params)
-        if (param.Out)
+        if (param.Out && param.Type.Kind != ApiKind::Span)
             out += pad + NameOf(param, names) + " = " + FromSlot(param.Type, Local(param)) + ";\n";
     if (hasResult)
         out += pad + "return " + FromSlot(function.Returns, "result") + ";\n";
+    for (const ApiParam& param : function.Params)
+    {
+        if (param.Type.Kind != ApiKind::Span)
+            continue;
+        pad.resize(pad.size() - 4);
+        out += pad + "}\n";
+    }
 }
 
 void EmitMethod(std::string& out, const ApiModule& module, const ApiFunction& function, const Index& index, bool member)

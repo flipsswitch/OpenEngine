@@ -115,7 +115,7 @@ DeclarationProblem Problem(std::string problem, std::string fix)
 std::optional<ApiType> ResolveSpan(std::string_view text, const ApiLookup& lookup,
                                    DeclarationProblem& outProblem)
 {
-    // "std::span<const T>" with no extent.
+    // A span with dynamic extent; its parameter determines whether the elements are writable.
     const std::size_t open = text.find('<');
     const std::size_t close = text.rfind('>');
     if (open == std::string_view::npos || close == std::string_view::npos || close < open)
@@ -129,19 +129,14 @@ std::optional<ApiType> ResolveSpan(std::string_view text, const ApiLookup& looku
         outProblem = Problem("a span with a fixed extent cannot be bound", "take std::span<const T>, whose count travels with it");
         return std::nullopt;
     }
-    if (!StartsWith(element, "const ") && !StartsWith(element, "const"))
-    {
-        outProblem = Problem("a span the function writes (`" + std::string(text) + "`) is not in the kinds",
-                             "take std::span<const T> in; return results through one out parameter");
-        return std::nullopt;
-    }
-    element = TrimView(element.substr(5));
+    if (StartsWith(element, "const "))
+        element = TrimView(element.substr(5));
     std::optional<ApiType> elementType = ResolveValue(element, lookup, outProblem);
     if (!elementType)
         return std::nullopt;
-    if (elementType->Kind == ApiKind::String || elementType->Kind == ApiKind::Span)
+    if (elementType->Kind == ApiKind::Void || elementType->Kind == ApiKind::String || elementType->Kind == ApiKind::Span)
     {
-        outProblem = Problem("a span of text or of spans cannot be bound", "take a span of a value kind (numbers, vectors, records)");
+        outProblem = Problem("a span of void, text or spans cannot be bound", "take a span of a value kind (numbers, vectors, records)");
         return std::nullopt;
     }
     ApiType span;
@@ -334,6 +329,11 @@ std::optional<ApiParamShape> ResolveParameter(std::string_view typeText, const A
     {
         outProblem = Problem("text or a span cannot be an out parameter", "take std::string_view or std::span<const T> in");
         return std::nullopt;
+    }
+    if (type->Kind == ApiKind::Span)
+    {
+        const std::string_view element = TrimView(std::string_view(text).substr(text.find('<') + 1));
+        shape.Out = !StartsWith(element, "const ");
     }
     shape.Type = std::move(*type);
     return shape;

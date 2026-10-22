@@ -213,6 +213,149 @@ namespace GameEngine.ManagedBindingTests
             Assert.That(context.IsAlive, Is.False, "nothing roots the unloaded context");
         }
 
+        /// <summary>The nearest hits fill only the supplied slice, in distance order.</summary>
+        [Test]
+        public void RayCastAllReturnsNearestHitsWithinTheBuffer()
+        {
+            AddBox(new Vector3(0f, 0f, 12f), Vector3.One, BoxKind.Static);
+            Entity nearest = AddBox(new Vector3(0f, 0f, 4f), Vector3.One, BoxKind.Static);
+            Entity next = AddBox(new Vector3(0f, 0f, 8f), Vector3.One, BoxKind.Static);
+            var hits = new RayHit[4];
+            Array.Fill(hits, new RayHit { Distance = -1f });
+
+            int count = Physics.RayCastAll(Vector3.Zero, new Vector3(0f, 0f, 2f), hits.AsSpan(1, 2));
+
+            Assert.That(count, Is.EqualTo(2));
+            Assert.That(hits[1].Entity, Is.EqualTo(nearest));
+            Assert.That(hits[2].Entity, Is.EqualTo(next));
+            Assert.That(hits[1].Distance, Is.EqualTo(3f).Within(1e-3f));
+            Assert.That(hits[2].Distance, Is.EqualTo(7f).Within(1e-3f));
+            Assert.That(hits[1].Point.X, Is.EqualTo(0f).Within(1e-3f));
+            Assert.That(hits[1].Point.Y, Is.EqualTo(0f).Within(1e-3f));
+            Assert.That(hits[1].Point.Z, Is.EqualTo(3f).Within(1e-3f));
+            Assert.That(hits[1].Normal, Is.EqualTo(-Vector3.UnitZ));
+            Assert.That(hits[0].Distance, Is.EqualTo(-1f));
+            Assert.That(hits[3].Distance, Is.EqualTo(-1f));
+        }
+
+        /// <summary>The ray query applies its layer, trigger, and distance filters.</summary>
+        [Test]
+        public void RayCastAllAppliesTheNativeFilters()
+        {
+            Entity solid = AddBox(new Vector3(0f, 0f, 4f), Vector3.One, BoxKind.Static);
+            Entity trigger = AddBox(new Vector3(0f, 0f, 8f), Vector3.One, BoxKind.Trigger);
+            Entity dynamicBox = AddBox(new Vector3(0f, 0f, 12f), Vector3.One, BoxKind.Dynamic);
+            Span<RayHit> hits = stackalloc RayHit[4];
+            hits.Fill(new RayHit { Distance = -1f });
+
+            Assert.That(Physics.RayCastAll(Vector3.Zero, Vector3.UnitZ, hits), Is.EqualTo(3));
+            Assert.That(hits[0].Entity, Is.EqualTo(solid));
+            Assert.That(hits[1].Entity, Is.EqualTo(trigger));
+            Assert.That(hits[2].Entity, Is.EqualTo(dynamicBox));
+            Assert.That(hits[3].Distance, Is.EqualTo(-1f));
+            Assert.That(Physics.RayCastAll(Vector3.Zero, Vector3.UnitZ, hits, ignoreTriggers: true), Is.EqualTo(2));
+            Assert.That(hits[0].Entity, Is.EqualTo(solid));
+            Assert.That(hits[1].Entity, Is.EqualTo(dynamicBox));
+            Assert.That(Physics.RayCastAll(Vector3.Zero, Vector3.UnitZ, hits, layerMask: 1u << 1), Is.EqualTo(1));
+            Assert.That(hits[0].Entity, Is.EqualTo(dynamicBox));
+            Assert.That(Physics.RayCastAll(Vector3.Zero, Vector3.UnitZ, hits, maxDistance: 5f), Is.EqualTo(1));
+            Assert.That(hits[0].Entity, Is.EqualTo(solid));
+            Assert.That(Physics.RayCastAll(Vector3.Zero, Vector3.UnitZ, hits, layerMask: 0), Is.Zero);
+        }
+
+        /// <summary>An empty buffer, a miss, or an invalid ray writes no result.</summary>
+        [Test]
+        public void RayCastAllLeavesTheBufferAloneWhenThereAreNoHits()
+        {
+            AddBox(new Vector3(0f, 0f, 4f), Vector3.One, BoxKind.Static);
+            Span<RayHit> hits = stackalloc RayHit[1];
+            hits[0] = new RayHit { Distance = -1f };
+
+            Assert.That(Physics.RayCastAll(Vector3.Zero, Vector3.UnitZ, Span<RayHit>.Empty), Is.Zero);
+            Assert.That(Physics.RayCastAll(Vector3.Zero, -Vector3.UnitZ, hits), Is.Zero);
+            Assert.That(Physics.RayCastAll(Vector3.Zero, Vector3.Zero, hits), Is.Zero);
+            Assert.That(Physics.RayCastAll(Vector3.Zero, Vector3.UnitZ, hits, maxDistance: 0f), Is.Zero);
+            Assert.That(Physics.RayCastAll(Vector3.Zero, Vector3.UnitZ, hits, maxDistance: float.NaN), Is.Zero);
+            Assert.That(Physics.RayCastAll(Vector3.Zero, Vector3.UnitZ, hits, maxDistance: -1f), Is.Zero);
+            Assert.That(Physics.RayCastAll(Vector3.Zero, Vector3.UnitZ, hits, maxDistance: float.PositiveInfinity), Is.Zero);
+            Assert.That(Physics.RayCastAll(new Vector3(float.NaN, 0f, 0f), Vector3.UnitZ, hits), Is.Zero);
+            Assert.That(Physics.RayCastAll(Vector3.Zero, new Vector3(float.NaN, 0f, 0f), hits), Is.Zero);
+            Assert.That(hits[0].Distance, Is.EqualTo(-1f));
+        }
+
+        /// <summary>The box orientation reaches the native query in the engine's coordinate convention.</summary>
+        [Test]
+        public void BoxOverlapUsesTheSuppliedRotation()
+        {
+            Entity box = AddBox(new Vector3(0f, 0f, 2f), new Vector3(0.25f), BoxKind.Static);
+            Span<Entity> hits = stackalloc Entity[2];
+            hits.Fill(Entity.None);
+            Vector3 halfExtents = new Vector3(3f, 0.5f, 0.5f);
+
+            Assert.That(Physics.BoxOverlap(Vector3.Zero, halfExtents, Quaternion.Identity, hits), Is.Zero);
+            Assert.That(Physics.BoxOverlap(Vector3.Zero, halfExtents,
+                Quaternion.CreateFromAxisAngle(Vector3.UnitY, MathF.PI * 0.5f), hits), Is.EqualTo(1));
+            Assert.That(hits[0], Is.EqualTo(box));
+            Assert.That(hits[1], Is.EqualTo(Entity.None));
+        }
+
+        /// <summary>The overlap filters and capacity match the native query, without writing past its slice.</summary>
+        [Test]
+        public void BoxOverlapAppliesTheNativeFiltersAndBufferLimit()
+        {
+            Entity solid = AddBox(new Vector3(-2f, 0f, 0f), Vector3.One, BoxKind.Static);
+            Entity trigger = AddBox(Vector3.Zero, Vector3.One, BoxKind.Trigger);
+            Entity dynamicBox = AddBox(new Vector3(2f, 0f, 0f), Vector3.One, BoxKind.Dynamic);
+            var hits = new Entity[5];
+            Array.Fill(hits, Entity.None);
+            Vector3 halfExtents = new Vector3(5f);
+
+            int count = Physics.BoxOverlap(Vector3.Zero, halfExtents, Quaternion.Identity, hits.AsSpan(1, 3));
+            Assert.That(count, Is.EqualTo(3));
+            Assert.That(hits.Skip(1).Take(count), Is.EquivalentTo(new[] { solid, trigger, dynamicBox }));
+            Assert.That(hits[0], Is.EqualTo(Entity.None));
+            Assert.That(hits[4], Is.EqualTo(Entity.None));
+            count = Physics.BoxOverlap(Vector3.Zero, halfExtents, Quaternion.Identity, hits, ignoreTriggers: true);
+            Assert.That(count, Is.EqualTo(2));
+            Assert.That(hits.Take(count), Is.EquivalentTo(new[] { solid, dynamicBox }));
+            count = Physics.BoxOverlap(Vector3.Zero, halfExtents, Quaternion.Identity, hits, layerMask: 1u << 1);
+            Assert.That(count, Is.EqualTo(1));
+            Assert.That(hits[0], Is.EqualTo(dynamicBox));
+            Assert.That(Physics.BoxOverlap(Vector3.Zero, halfExtents, Quaternion.Identity, hits.AsSpan(0, 1)), Is.EqualTo(1));
+            Assert.That(Physics.BoxOverlap(Vector3.Zero, halfExtents, Quaternion.Identity, hits, layerMask: 0), Is.Zero);
+        }
+
+        /// <summary>An empty buffer, a miss, or an invalid box writes no result.</summary>
+        [Test]
+        public void BoxOverlapLeavesTheBufferAloneWhenThereAreNoHits()
+        {
+            AddBox(Vector3.Zero, Vector3.One, BoxKind.Static);
+            Span<Entity> hits = stackalloc Entity[1];
+            hits[0] = Entity.None;
+
+            Assert.That(Physics.BoxOverlap(Vector3.Zero, Vector3.One, Quaternion.Identity, Span<Entity>.Empty), Is.Zero);
+            Assert.That(Physics.BoxOverlap(new Vector3(10f), Vector3.One, Quaternion.Identity, hits), Is.Zero);
+            Assert.That(Physics.BoxOverlap(Vector3.Zero, Vector3.Zero, Quaternion.Identity, hits), Is.Zero);
+            Assert.That(Physics.BoxOverlap(Vector3.Zero, Vector3.One, default, hits), Is.Zero);
+            Assert.That(hits[0], Is.EqualTo(Entity.None));
+        }
+
+        /// <summary>Outside play mode both queries return no results and leave the caller's buffers untouched.</summary>
+        [Test]
+        public void BufferedQueriesReturnNoResultsOutsidePlay()
+        {
+            Assert.That(GE_TestScene_Close(), Is.EqualTo(0));
+            Span<RayHit> rays = stackalloc RayHit[1];
+            Span<Entity> overlaps = stackalloc Entity[1];
+            rays[0] = new RayHit { Distance = -1f };
+            overlaps[0] = Entity.None;
+
+            Assert.That(Physics.RayCastAll(Vector3.Zero, Vector3.UnitZ, rays), Is.Zero);
+            Assert.That(Physics.BoxOverlap(Vector3.Zero, Vector3.One, Quaternion.Identity, overlaps), Is.Zero);
+            Assert.That(rays[0].Distance, Is.EqualTo(-1f));
+            Assert.That(overlaps[0], Is.EqualTo(Entity.None));
+        }
+
         private const int kRayCastCalls = 1_000_000;
         private const int kRayCastRounds = 7;
 

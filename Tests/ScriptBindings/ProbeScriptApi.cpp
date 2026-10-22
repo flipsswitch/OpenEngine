@@ -3,6 +3,7 @@
 // native binding.
 #include "ProbeSystem.h"
 
+#include <algorithm>
 #include <stdexcept>
 
 namespace GameEngine::Probe::Script
@@ -89,6 +90,18 @@ bool TryNearest(ProbeSystem& probe, Mathematics::Vector3 point, ECS::EntityHandl
     (void)point;
     outEntity = probe.Nearest;
     return probe.Nearest.IsValid();
+}
+
+std::int32_t FillHits(ProbeSystem& probe, std::span<Hit> hits)
+{
+    ++ProbeSystem::Calls();
+    const std::size_t count = std::min<std::size_t>(hits.size(), 2);
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        hits[i].distance = static_cast<float>(i + 1);
+        hits[i].facing = probe.Facing;
+    }
+    return static_cast<std::int32_t>(count);
 }
 
 SubscriptionId SubscribeTouched(ECS::EntityHandle scope, ScriptCallback<Touch> callback)

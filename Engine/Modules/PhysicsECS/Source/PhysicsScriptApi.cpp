@@ -8,7 +8,10 @@
 #include "ECS/World.h"
 #include "Physics/PhysicsWorld.h"
 
+#include <algorithm>
 #include <cmath>
+#include <limits>
+#include <vector>
 
 namespace GameEngine::PhysicsECS::Script
 {
@@ -97,6 +100,57 @@ bool RayCast(Physics::PhysicsWorld& physics, Mathematics::Vector3 origin, Mathem
     hit.normal = result.hitNormal;
     hit.distance = result.distance;
     return true;
+}
+
+std::int32_t RayCastAll(Physics::PhysicsWorld& physics, Mathematics::Vector3 origin, Mathematics::Vector3 direction,
+                        std::span<RayHit> results, float maxDistance, std::uint32_t layerMask, bool ignoreTriggers)
+{
+    const float lengthSquared = direction.LengthSquared();
+    if (results.empty() || !(maxDistance > 0.0f) || !std::isfinite(maxDistance) ||
+        !(lengthSquared > 0.0f) || !std::isfinite(lengthSquared) ||
+        !std::isfinite(origin.x) || !std::isfinite(origin.y) || !std::isfinite(origin.z))
+        return 0;
+
+    Physics::RayCastQuery query;
+    query.ray.origin = origin;
+    query.ray.direction = direction;
+    query.maxDistance = maxDistance;
+    query.filter.layerMask = layerMask;
+    query.filter.ignoreSensors = ignoreTriggers;
+    const auto capacity = static_cast<std::uint32_t>(
+        std::min<std::size_t>(results.size(), std::numeric_limits<std::int32_t>::max()));
+    std::vector<Physics::RayCastResult> hits;
+    physics.RayCastAll(query, hits, capacity);
+    for (std::size_t i = 0; i < hits.size(); ++i)
+    {
+        results[i].entity = ECS::EntityHandle(static_cast<std::uint32_t>(hits[i].userData));
+        results[i].point = hits[i].hitPoint;
+        results[i].normal = hits[i].hitNormal;
+        results[i].distance = hits[i].distance;
+    }
+    return static_cast<std::int32_t>(hits.size());
+}
+
+std::int32_t BoxOverlap(Physics::PhysicsWorld& physics, Mathematics::Vector3 center, Mathematics::Vector3 halfExtents,
+                        Mathematics::Quaternion rotation, std::span<ECS::EntityHandle> results,
+                        std::uint32_t layerMask, bool ignoreTriggers)
+{
+    if (results.empty())
+        return 0;
+
+    Physics::BoxOverlapQuery query;
+    query.center = center;
+    query.halfExtents = halfExtents;
+    query.rotation = rotation;
+    query.filter.layerMask = layerMask;
+    query.filter.ignoreSensors = ignoreTriggers;
+    const auto capacity = static_cast<std::uint32_t>(
+        std::min<std::size_t>(results.size(), std::numeric_limits<std::int32_t>::max()));
+    std::vector<Physics::OverlapResult> hits;
+    physics.BoxOverlap(query, hits, capacity);
+    for (std::size_t i = 0; i < hits.size(); ++i)
+        results[i] = ECS::EntityHandle(static_cast<std::uint32_t>(hits[i].userData));
+    return static_cast<std::int32_t>(hits.size());
 }
 
 Mathematics::Vector3 GetLinearVelocity(ECS::World& world, ECS::EntityHandle entity)

@@ -114,20 +114,21 @@ namespace GameEngine.Scripting
     {
         public const uint AllLayers = 4294967295u;
 
-        private static readonly BindingTable s_Table = BindingTable.Acquire("Probe", 0xEC98DC6909D46F03UL, 13);
+        private static readonly BindingTable s_Table = BindingTable.Acquire("Probe", 0x39782EC547AA1E6AUL, 14);
         private static readonly delegate* unmanaged[Cdecl]<uint*, int> s_CallCount = (delegate* unmanaged[Cdecl]<uint*, int>)s_Table[0];
-        private static readonly delegate* unmanaged[Cdecl]<SoundOptions*, int> s_GetLastOptions = (delegate* unmanaged[Cdecl]<SoundOptions*, int>)s_Table[1];
-        private static readonly delegate* unmanaged[Cdecl]<Matrix4x4*, int> s_GetPose = (delegate* unmanaged[Cdecl]<Matrix4x4*, int>)s_Table[2];
-        private static readonly delegate* unmanaged[Cdecl]<uint, float*, int> s_GetSpeed = (delegate* unmanaged[Cdecl]<uint, float*, int>)s_Table[3];
-        private static readonly delegate* unmanaged[Cdecl]<ulong, SoundOptions*, float, Loudness, uint, byte*, int> s_Play = (delegate* unmanaged[Cdecl]<ulong, SoundOptions*, float, Loudness, uint, byte*, int>)s_Table[4];
-        private static readonly delegate* unmanaged[Cdecl]<uint, Vector3*, int> s_Push = (delegate* unmanaged[Cdecl]<uint, Vector3*, int>)s_Table[5];
-        private static readonly delegate* unmanaged[Cdecl]<byte, sbyte, double, int> s_SetFlag = (delegate* unmanaged[Cdecl]<byte, sbyte, double, int>)s_Table[6];
-        private static readonly delegate* unmanaged[Cdecl]<uint, float, int> s_SetSpeed = (delegate* unmanaged[Cdecl]<uint, float, int>)s_Table[7];
-        private static readonly delegate* unmanaged[Cdecl]<int> s_Throw = (delegate* unmanaged[Cdecl]<int>)s_Table[8];
-        private static readonly delegate* unmanaged[Cdecl]<Vector3*, Vector3*, Hit*, float, byte*, int> s_TryCast = (delegate* unmanaged[Cdecl]<Vector3*, Vector3*, Hit*, float, byte*, int>)s_Table[9];
-        private static readonly delegate* unmanaged[Cdecl]<Vector3*, uint*, byte*, int> s_TryNearest = (delegate* unmanaged[Cdecl]<Vector3*, uint*, byte*, int>)s_Table[10];
-        private static readonly delegate* unmanaged[Cdecl]<uint, ScriptCallbackData*, ulong*, int> s_SubscribeTouched = (delegate* unmanaged[Cdecl]<uint, ScriptCallbackData*, ulong*, int>)s_Table[11];
-        private static readonly delegate* unmanaged[Cdecl]<ulong, int> s_UnsubscribeTouched = (delegate* unmanaged[Cdecl]<ulong, int>)s_Table[12];
+        private static readonly delegate* unmanaged[Cdecl]<Hit*, int, int*, int> s_FillHits = (delegate* unmanaged[Cdecl]<Hit*, int, int*, int>)s_Table[1];
+        private static readonly delegate* unmanaged[Cdecl]<SoundOptions*, int> s_GetLastOptions = (delegate* unmanaged[Cdecl]<SoundOptions*, int>)s_Table[2];
+        private static readonly delegate* unmanaged[Cdecl]<Matrix4x4*, int> s_GetPose = (delegate* unmanaged[Cdecl]<Matrix4x4*, int>)s_Table[3];
+        private static readonly delegate* unmanaged[Cdecl]<uint, float*, int> s_GetSpeed = (delegate* unmanaged[Cdecl]<uint, float*, int>)s_Table[4];
+        private static readonly delegate* unmanaged[Cdecl]<ulong, SoundOptions*, float, Loudness, uint, byte*, int> s_Play = (delegate* unmanaged[Cdecl]<ulong, SoundOptions*, float, Loudness, uint, byte*, int>)s_Table[5];
+        private static readonly delegate* unmanaged[Cdecl]<uint, Vector3*, int> s_Push = (delegate* unmanaged[Cdecl]<uint, Vector3*, int>)s_Table[6];
+        private static readonly delegate* unmanaged[Cdecl]<byte, sbyte, double, int> s_SetFlag = (delegate* unmanaged[Cdecl]<byte, sbyte, double, int>)s_Table[7];
+        private static readonly delegate* unmanaged[Cdecl]<uint, float, int> s_SetSpeed = (delegate* unmanaged[Cdecl]<uint, float, int>)s_Table[8];
+        private static readonly delegate* unmanaged[Cdecl]<int> s_Throw = (delegate* unmanaged[Cdecl]<int>)s_Table[9];
+        private static readonly delegate* unmanaged[Cdecl]<Vector3*, Vector3*, Hit*, float, byte*, int> s_TryCast = (delegate* unmanaged[Cdecl]<Vector3*, Vector3*, Hit*, float, byte*, int>)s_Table[10];
+        private static readonly delegate* unmanaged[Cdecl]<Vector3*, uint*, byte*, int> s_TryNearest = (delegate* unmanaged[Cdecl]<Vector3*, uint*, byte*, int>)s_Table[11];
+        private static readonly delegate* unmanaged[Cdecl]<uint, ScriptCallbackData*, ulong*, int> s_SubscribeTouched = (delegate* unmanaged[Cdecl]<uint, ScriptCallbackData*, ulong*, int>)s_Table[12];
+        private static readonly delegate* unmanaged[Cdecl]<ulong, int> s_UnsubscribeTouched = (delegate* unmanaged[Cdecl]<ulong, int>)s_Table[13];
 
         /// <summary>
         /// Counts the calls that reached the probe; on any thread.
@@ -140,6 +141,22 @@ namespace GameEngine.Scripting
             if (code != 0 && code != BindingErrors.NotInitialized)
                 BindingErrors.Throw(code, "Probe.CallCount");
             return result;
+        }
+
+        /// <summary>
+        /// Writes up to two hits into the caller's buffer and returns the number written.
+        /// </summary>
+        /// <remarks>Call it on the main thread. A call from any other thread, or from a job, throws EngineCallException.</remarks>
+        public static int FillHits(System.Span<Hit> hits)
+        {
+            int result = default;
+            fixed (Hit* hitsPointer = hits)
+            {
+                int code = s_FillHits(hitsPointer, hits.Length, &result);
+                if (code != 0 && code != BindingErrors.NotInitialized)
+                    BindingErrors.Throw(code, "Probe.FillHits");
+                return result;
+            }
         }
 
         /// <summary>
