@@ -1,4 +1,5 @@
 #include "Platform/SpeechInput.h"
+#include "SpeechAudioTap_mac.h"
 
 #import <AVFoundation/AVFoundation.h>
 #import <Speech/Speech.h>
@@ -150,7 +151,8 @@ struct SpeechInput::Impl : std::enable_shared_from_this<SpeechInput::Impl>
             SFSpeechAudioBufferRecognitionRequest* audioRequest = request;
             std::weak_ptr<Impl> weak = shared_from_this();
             auto smoothed = std::make_shared<LevelArray>();
-            [input installTapOnBus:0 bufferSize:1024 format:format block:^(AVAudioPCMBuffer* buffer, AVAudioTime*) {
+            NSError* tapError = nil;
+            const bool installed = Detail::InstallSpeechAudioTap(input, format, ^(AVAudioPCMBuffer* buffer, AVAudioTime*) {
                 [audioRequest appendAudioPCMBuffer:buffer];
                 auto owner = weak.lock();
                 if (!owner || owner->levelPending.exchange(true))
@@ -165,7 +167,12 @@ struct SpeechInput::Impl : std::enable_shared_from_this<SpeechInput::Impl>
                     if (self->running && self->generation == token && self->callbacks.Levels)
                         self->callbacks.Levels(levels);
                 });
-            }];
+            }, &tapError);
+            if (!installed)
+            {
+                End("Microphone capture could not start: " + Utf8(tapError.localizedDescription));
+                return;
+            }
             tapped = true;
             task = [recognizer recognitionTaskWithRequest:request resultHandler:^(SFSpeechRecognitionResult* result, NSError* error) {
                 auto owner = weak.lock();
