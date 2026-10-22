@@ -554,6 +554,8 @@ ShellProcessResult CancellableShellProcess::Run(const std::string& command,
 
     {
         std::lock_guard<std::mutex> lock(m_HandleMutex);
+        // Kill can close the pipes while Run is blocked, bypassing the next cancellation poll.
+        result.cancelled = result.cancelled || m_KillRequested.load();
         m_ProcessHandle = nullptr;
     }
     ::CloseHandle(pi.hProcess);
@@ -713,6 +715,7 @@ ShellProcessResult CancellableShellProcess::Run(const ProcessLaunch& launch,
 
     {
         std::lock_guard<std::mutex> lock(m_HandleMutex);
+        result.cancelled = result.cancelled || m_KillRequested.load();
         m_ProcessHandle = nullptr;
     }
     ::CloseHandle(pi.hProcess);
@@ -962,6 +965,7 @@ ShellProcessResult CancellableShellProcess::Run(const std::string& command,
 
     {
         std::lock_guard<std::mutex> lock(m_HandleMutex);
+        result.cancelled = result.cancelled || m_KillRequested.load();
         m_Pid = -1;
     }
     ::close(readFd);
@@ -1201,6 +1205,7 @@ ShellProcessResult CancellableShellProcess::Run(const ProcessLaunch& launch,
 
     {
         std::lock_guard<std::mutex> lock(m_HandleMutex);
+        result.cancelled = result.cancelled || m_KillRequested.load();
         m_Pid = -1;
     }
     CloseFd(stdoutFds[0]);
