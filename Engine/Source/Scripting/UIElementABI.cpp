@@ -380,6 +380,8 @@ GE_API GE_Result GE_CDECL GE_UIElement_RegisterEvent(uint64_t instanceId, const 
                 data.eventId = e.Id;
                 data.x = e.X;
                 data.y = e.Y;
+                data.windowX = e.WindowX;
+                data.windowY = e.WindowY;
                 data.button = e.Button;
                 data.mods = e.Mods;
                 data.value = e.Value;

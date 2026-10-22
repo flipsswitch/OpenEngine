@@ -9,6 +9,7 @@
 
 #include "AbiMainThread.h"
 #include "DllEngineBootstrap.h"
+#include "Engine/GameUI/GameplayUI.h"
 #include "PhysicsECS/PhysicsWorldService.h"
 #include "Scripting/ScriptingABI.h"
 
@@ -56,6 +57,14 @@ inline Physics::PhysicsWorld* ScriptContext<Physics::PhysicsWorld>(EngineCore& e
 {
     (void)engine;
     return PhysicsECS::PhysicsWorldService::TryGet();
+}
+
+template <>
+inline UIManager* ScriptContext<UIManager>(EngineCore& engine)
+{
+    (void)engine;
+    // Script ids resolve only in the published game UI, never the editor's chrome.
+    return GameUI::GetUIManager();
 }
 
 /// The thread rule a refused call broke, for the last error and the log.

@@ -187,6 +187,8 @@ namespace GameEngine.Scripting
             // the compiler refuses to let outlive the handler.
             internal nint Text;
             internal uint TextLen;
+            internal float WindowX;
+            internal float WindowY;
         }
 
         /// <summary>
@@ -242,7 +244,7 @@ namespace GameEngine.Scripting
         }
 
         /// <summary>
-        /// What a pointer event carries. Positions are in the subscribed element's layout space, in
+        /// What a pointer event carries. X/Y are in the subscribed element's layout space, in
         /// the host's UI pixels: the space its layout rect is in. Outside any CSS transform that is
         /// the host's UI space; under one, the pointer carried back through every transform that
         /// applies to the element, so it compares with the element's own box as it would anywhere
@@ -250,10 +252,12 @@ namespace GameEngine.Scripting
         /// </summary>
         public readonly struct PointerArgs
         {
-            internal PointerArgs(float x, float y, int mods)
+            internal PointerArgs(float x, float y, float windowX, float windowY, int mods)
             {
                 X = x;
                 Y = y;
+                WindowX = windowX;
+                WindowY = windowY;
                 Mods = mods;
             }
 
@@ -262,6 +266,12 @@ namespace GameEngine.Scripting
 
             /// <summary>Pointer Y in the element's layout space.</summary>
             public readonly float Y;
+
+            /// <summary>Pointer X in the host's UI pixels, unchanged by element transforms.</summary>
+            public readonly float WindowX;
+
+            /// <summary>Pointer Y in the host's UI pixels, unchanged by element transforms.</summary>
+            public readonly float WindowY;
 
             /// <summary>Modifier-key bitmask as the engine reports it.</summary>
             public readonly int Mods;

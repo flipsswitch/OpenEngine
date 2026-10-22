@@ -25,13 +25,6 @@ namespace GameEngine.ManagedInteropTests
     /// <see cref="Unsafe"/> reports the runtime layout in every case, which is the only layout
     /// the callback ever reads.
     /// </para>
-    /// <para>
-    /// What neither half of the pin can see is the TAIL PADDING. <c>TextLen</c> ends at 60 and
-    /// the struct rounds up to 64, so a field of up to four bytes appended after it lands inside
-    /// padding that already existed: the size assertion and every offset below still pass while
-    /// the two sides have stopped agreeing about byte 60. An append is pinned by adding its own
-    /// assertion here and in the native block, or it is not pinned at all.
-    /// </para>
     /// </summary>
     public class UiEventDataLayoutTests
     {
@@ -49,8 +42,8 @@ namespace GameEngine.ManagedInteropTests
         {
             Ui.NativeEventData d = default;
 
-            Assert.That(Unsafe.SizeOf<Ui.NativeEventData>(), Is.EqualTo(64),
-                        "sizeof(GE_UIEventData) is 64 with 64-bit pointers; the mirror must agree");
+            Assert.That(Unsafe.SizeOf<Ui.NativeEventData>(), Is.EqualTo(72),
+                        "sizeof(GE_UIEventData) is 72 with 64-bit pointers; the mirror must agree");
 
             Assert.That(ByteOffsetOf(ref d, ref d.ElementInstanceId), Is.EqualTo(0), "elementInstanceId");
             Assert.That(ByteOffsetOf(ref d, ref d.EventId), Is.EqualTo(8), "eventId");
@@ -67,6 +60,8 @@ namespace GameEngine.ManagedInteropTests
             // out of scrollY's neighbour and hand handlers a wild address.
             Assert.That(ByteOffsetOf(ref d, ref d.Text), Is.EqualTo(48), "text");
             Assert.That(ByteOffsetOf(ref d, ref d.TextLen), Is.EqualTo(56), "textLen");
+            Assert.That(ByteOffsetOf(ref d, ref d.WindowX), Is.EqualTo(60), "windowX");
+            Assert.That(ByteOffsetOf(ref d, ref d.WindowY), Is.EqualTo(64), "windowY");
         }
     }
 }

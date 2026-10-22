@@ -201,7 +201,8 @@ GE_API uint32_t GE_CDECL GE_ScriptingGetAbiVersion(void);
 // 3.2 adds GE_Animator_PollEventsOnEntity and GE_AnimationEventRecord (AnimatorABI.h) — additive, minor bump.
 // 4.0 removes the GE_Input_* exports and GE_InputActionState: scripts reach Input through its generated
 // table (GE_Input_GetInterface). It adds GE_GetLastScriptError.
-static const uint32_t GE_ABI_VERSION_CURRENT = GE_ABI_VERSION_ENCODE(4u, 0u);
+// 4.1 appends window coordinates to GE_UIEventData without moving its existing fields.
+static const uint32_t GE_ABI_VERSION_CURRENT = GE_ABI_VERSION_ENCODE(4u, 1u);
 
 // Forward declarations for function pointer types used in the interface
 typedef GE_Result (GE_CDECL *GE_Log_Fn)(GE_LogLevel level, const char* msg, uint32_t msgLen);
@@ -361,6 +362,10 @@ typedef struct GE_UIEventData
     // keeps the text must copy it before the callback returns.
     const char* text;
     uint32_t textLen;
+    // The same point in the host's UI pixels, unchanged as the event bubbles. x/y above
+    // are in CurrentTarget's layout space. Appended in ABI 4.1; existing offsets stay fixed.
+    float windowX;
+    float windowY;
 } GE_UIEventData;
 
 // THE LAYOUT IS THE CONTRACT. The managed mirror (GameEngine.Scripting.Ui.NativeEventData,
@@ -369,21 +374,9 @@ typedef struct GE_UIEventData
 // compile on the managed side, it silently re-points every managed read. These pins turn that
 // into a build break. The mirror's own half is UiEventDataLayoutTests (Managed/InteropTests);
 // the two are edited together or not at all.
-//
-// The tail is the one place pointer width shows. On 64-bit targets `scrollY` ends at 44 and
-// `text` aligns up to 48, leaving four implicit bytes before it and four more after `textLen`.
-// On wasm32 the 4-byte pointer packs straight in at 44 and the struct rounds up to 56 on the
-// uint64 fields' alignment. The managed mirror's `nint Text` shifts identically, so the two
-// sides agree at either width — the pins below just have to know both.
-//
-// THE BLIND SPOT IS THAT SAME TAIL PADDING, and it is the one change these pins cannot see.
-// On 64-bit, `textLen` ends at 60 and the struct rounds up to 64, so a field of up to four
-// bytes appended after it lands at offset 60 inside padding that already existed: sizeof stays
-// 64, every offset above is unchanged, and both halves of the pin stay green while the two
-// sides have stopped agreeing about what byte 60 means. (wasm32 has the same four bytes at
-// 52.) Appending to this struct is therefore a change that must be mirrored by hand and pinned
-// by hand — add the offset assert for the new field on both sides, or the next four bytes are
-// silent.
+// The 32-bit layout is wasm32 (eight-byte alignment for uint64_t); both layouts include
+// four bytes of tail padding after windowY. A new field can occupy padding without changing
+// sizeof, so every appended field needs an offset pin in both mirrors. NativeAOT is 64-bit.
 #ifdef __cplusplus
 static_assert(offsetof(GE_UIEventData, elementInstanceId) == 0, "elementInstanceId moved");
 static_assert(offsetof(GE_UIEventData, eventId) == 8, "eventId moved");
@@ -395,13 +388,17 @@ static_assert(offsetof(GE_UIEventData, value) == 32, "value moved");
 static_assert(offsetof(GE_UIEventData, scrollX) == 36, "scrollX moved");
 static_assert(offsetof(GE_UIEventData, scrollY) == 40, "scrollY moved");
 #if UINTPTR_MAX == 0xFFFFFFFFu
-static_assert(sizeof(GE_UIEventData) == 56, "GE_UIEventData size changed");
+static_assert(sizeof(GE_UIEventData) == 64, "GE_UIEventData size changed");
 static_assert(offsetof(GE_UIEventData, text) == 44, "text moved");
 static_assert(offsetof(GE_UIEventData, textLen) == 48, "textLen moved");
+static_assert(offsetof(GE_UIEventData, windowX) == 52, "windowX moved");
+static_assert(offsetof(GE_UIEventData, windowY) == 56, "windowY moved");
 #else
-static_assert(sizeof(GE_UIEventData) == 64, "GE_UIEventData size changed");
+static_assert(sizeof(GE_UIEventData) == 72, "GE_UIEventData size changed");
 static_assert(offsetof(GE_UIEventData, text) == 48, "text moved");
 static_assert(offsetof(GE_UIEventData, textLen) == 56, "textLen moved");
+static_assert(offsetof(GE_UIEventData, windowX) == 60, "windowX moved");
+static_assert(offsetof(GE_UIEventData, windowY) == 64, "windowY moved");
 #endif
 #endif
 

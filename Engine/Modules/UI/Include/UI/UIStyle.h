@@ -1,5 +1,7 @@
 #pragma once
 
+#include "UI/UiTransformsScriptApi.h"
+
 #include "AssetCore/GUID.h"
 #include "AssetCore/NineSlice.h"
 #include "Mathematics/Easing.h"
@@ -475,18 +477,6 @@ struct BackgroundPositionValue
     float Y = 50.0f;
     bool YIsPercent = true;
     bool operator==(const BackgroundPositionValue&) const = default;
-};
-
-// One CSS transform function (css-transforms-1, 2D only).
-// translateX(), scaleY(), skewX() and friends parse to the two-axis form, with
-// the other axis at its identity.
-enum class TransformFunction : uint8_t
-{
-    Translate,
-    Scale,
-    Rotate,
-    Skew,
-    Matrix
 };
 
 struct TransformOp

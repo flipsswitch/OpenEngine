@@ -100,7 +100,7 @@ namespace GameEngine.Interop
         /// something an older native never wrote — most sharply a widened blittable payload
         /// struct, which carries no size field of its own and so cannot be checked per call.
         /// </summary>
-        public const uint kAbiMinor = 0;
+        public const uint kAbiMinor = 1;
 
         /// <summary>Combined ABI version (major&lt;&lt;16 | minor).</summary>
         public static readonly uint kAbi = (kAbiMajor << 16) | kAbiMinor;

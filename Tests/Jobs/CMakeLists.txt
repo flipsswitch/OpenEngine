@@ -302,8 +302,10 @@ set_tests_properties(ManagedInteropTests PROPERTIES
 # the build copies the engine's own GameEngine.Native and Engine beside the test assembly, where the
 # bindings load them first, and the vcpkg runtime the test executables stage is on PATH.
 if(TARGET GameEngine.Native)
-  # The physics scene the tests step (bodies, entities, the world's shutdown), on the same Engine.
-  add_library(BindingTestScene SHARED ${CMAKE_SOURCE_DIR}/Tests/ScriptBindings/BindingTestScene.cpp)
+  # The physics scene and game UI tree the tests drive, on the same Engine.
+  add_library(BindingTestScene SHARED
+      ${CMAKE_SOURCE_DIR}/Tests/ScriptBindings/BindingTestScene.cpp
+      ${CMAKE_SOURCE_DIR}/Tests/ScriptBindings/BindingTestUI.cpp)
   target_link_libraries(BindingTestScene PRIVATE Engine)
   set_target_properties(BindingTestScene PROPERTIES FOLDER "Tests")
   add_custom_target(BuildManagedBindingTests ALL

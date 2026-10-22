@@ -17,5 +17,6 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Scripting.Bindings\GameEngine.Scripting.Bindings.csproj" />
+    <ProjectReference Include="..\Scripting.ABI\GameEngine.Scripting.ABI.csproj" />
   </ItemGroup>
 </Project>

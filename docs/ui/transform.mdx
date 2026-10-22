@@ -67,9 +67,35 @@ void UpdateSpeedo(GameEngine::UIElement& needle, float speed)
 ::::
 ::::tab[C#]
 
-:::caution[C# binding pending]
-No managed call sets a transform yet; tracked as [OpenEngine issue #33](https://github.com/Game-Crafters-Guild/OpenEngine/issues/33). The native call is `UIElement::Overrides().Set(Style::Transform, ...)`. Until then, a script toggles a class whose rule carries the transform (`Ui.Element.AddClass` and `RemoveClass`), and a `transition` on the rule animates it.
-:::
+```csharp title="A speedometer needle"
+using GameEngine.Scripting;
+
+void UpdateSpeedo(Ui.Element needle, float speed)
+{
+    needle.SetTransformOrigin(Ui.Length.Percent(50), Ui.Length.Percent(100));
+    needle.SetTransform([Ui.Transform.Rotate(speed * 2.7f - 135.0f)]);
+}
+```
+
+`SetTransform` takes a `ReadOnlySpan<UiTransformOperation>`, preserving the list's order and the native transform semantics. Each call replaces the complete transform override. Pass an empty list (`[]`) to override the stylesheet with `none`; call `ClearTransform()` to remove the override and restore the stylesheet's transform. `ClearTransformOrigin()` restores its origin independently.
+
+| Factory | Arguments |
+|---|---|
+| `Ui.Transform.Translate(x, y)` | `Ui.Length.Px(value)` or `Ui.Length.Percent(value)` for each axis. Percentages use the element's border box. |
+| `Ui.Transform.Scale(x, y)` | Scale factors for each axis. |
+| `Ui.Transform.Rotate(degrees)` | Degrees, positive clockwise. |
+| `Ui.Transform.Skew(xDegrees, yDegrees)` | Degrees for each axis. |
+| `Ui.Transform.Matrix(a, b, c, d, e, f)` | The six CSS matrix values; e and f are in pixels. |
+
+```csharp title="Combine functions and restore authored styles"
+needle.SetTransform([
+    Ui.Transform.Translate(Ui.Length.Percent(-50), Ui.Length.Px(4)),
+    Ui.Transform.Rotate(angle)]);
+needle.ClearTransform();
+needle.ClearTransformOrigin();
+```
+
+Call these methods on the main thread, such as from a script update or a UI event handler. The methods return `false` if the game UI is unavailable, the element has been destroyed or detached, or a supplied number is not finite. A refused value leaves the previous override unchanged. A call from another thread throws `EngineCallException`; use `MainThread.Post` to schedule it.
 
 ::::
 :::::
@@ -93,7 +119,7 @@ Hit testing maps the pointer through every transformed ancestor, so hover, press
 
 Event positions follow the transform too. A `UIEvent`'s `X` and `Y` are in the layout space of the element handling it: the window position carried back through every transform that applies to that element, worked out again at each step as the event bubbles. A handler compares them with the element's own layout rect, as it would without a transform, which is why a slider's thumb, a text field's caret, a scroll bar's thumb and a list's rows work inside a rotated or scaled panel. Outside any transform the positions are window positions.
 
-`WindowX` and `WindowY` are the window position, the same at every step: use them to compare against another element or to place something at the pointer, as a drag that drops onto another panel does.
+`WindowX` and `WindowY`, also available on C# `Ui.PointerArgs`, are the window position, the same at every step: use them to compare against another element or to place something at the pointer, as a drag that drops onto another panel does.
 
 To go between the two spaces yourself:
 
@@ -111,3 +137,7 @@ bool WindowToLayout(const Mathematics::Vector2& window, Mathematics::Vector2& ou
 - Overlays (dropdown popups, modals, drag previews) escape their ancestors' clips but keep their transforms, as a popup inside a transformed element does on the web: a dropdown under a header scaled 2x opens under it, drawn at 2x. The hover tooltip and the context menu open at the window level, beside the element where it is drawn.
 - A chain of up to 32 nested transformed elements composes. A transformed element under 32 transformed ancestors has its transform ignored: it is drawn and hit untransformed, in the same place, and the log says so once. A primitive is clipped by at most four nested clips.
 - Elements inside a transformed element are never culled against an off-screen clip. That costs a little extra drawing for large transformed scroll content; ordinary transformed panels are unaffected. When a switch between `none` and a transform reaches an element that was culled, the whole UI is regenerated once, because the transform may have moved it into view.
+
+## Changelog
+
+- Added C# transform and origin overrides, clearing back to authored styles, and window coordinates on pointer events.

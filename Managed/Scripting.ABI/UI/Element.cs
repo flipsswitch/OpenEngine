@@ -149,6 +149,41 @@ namespace GameEngine.Scripting
                 => GE_UIElement_SetWidthPercent(InstanceId, pct) == 0;
 
             /// <summary>
+            /// Replace the transform override in CSS list order. An empty span overrides
+            /// authored transforms with none. Values are copied; the span is not retained.
+            /// Returns false for a dead/detached element, unavailable game UI, or invalid value,
+            /// leaving the previous override unchanged. Call on the main thread.
+            /// </summary>
+            /// <exception cref="EngineCallException">Called from another thread.</exception>
+            public bool SetTransform(ReadOnlySpan<UiTransformOperation> operations)
+                => UiTransforms.SetTransform(InstanceId, operations);
+
+            /// <summary>
+            /// Remove the transform override and restore authored styles. Returns false if
+            /// the element no longer resolves in the game UI. Call on the main thread.
+            /// </summary>
+            /// <exception cref="EngineCallException">Called from another thread.</exception>
+            public bool ClearTransform()
+                => UiTransforms.ClearTransform(InstanceId);
+
+            /// <summary>
+            /// Override the pivot in border-box pixels or percent (100 means 100%).
+            /// Returns false for a dead/detached element, unavailable game UI, or non-finite
+            /// length, leaving the previous origin unchanged. Call on the main thread.
+            /// </summary>
+            /// <exception cref="EngineCallException">Called from another thread.</exception>
+            public bool SetTransformOrigin(UiLength x, UiLength y)
+                => UiTransforms.SetTransformOrigin(InstanceId, x, y);
+
+            /// <summary>
+            /// Remove the origin override and restore authored styles. Returns false if
+            /// the element no longer resolves in the game UI. Call on the main thread.
+            /// </summary>
+            /// <exception cref="EngineCallException">Called from another thread.</exception>
+            public bool ClearTransformOrigin()
+                => UiTransforms.ClearTransformOrigin(InstanceId);
+
+            /// <summary>
             /// The pointer entered this element (the hover transition, not every move).
             /// <para>
             /// Explicit accessors, not a field-like event: the FIRST <c>+=</c> creates exactly

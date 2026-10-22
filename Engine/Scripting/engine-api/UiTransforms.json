@@ -1,0 +1,230 @@
+{
+  "format": 1,
+  "name": "UiTransforms",
+  "hash": "0xbd430043a1bb160f",
+  "constants": [],
+  "enums": [
+    {
+      "id": "UiTransforms.TransformFunction",
+      "name": "TransformFunction",
+      "cpp": "GameEngine::TransformFunction",
+      "header": "UI/UiTransformsScriptApi.h",
+      "line": 13,
+      "doc": "A CSS transform function, shared by native styles and the generated script API. Axis-specific CSS functions parse to the two-axis form, with the other axis at its identity.",
+      "underlying": "UInt8",
+      "values": [
+        {
+          "name": "Translate",
+          "value": 0
+        },
+        {
+          "name": "Scale",
+          "value": 1
+        },
+        {
+          "name": "Rotate",
+          "value": 2
+        },
+        {
+          "name": "Skew",
+          "value": 3
+        },
+        {
+          "name": "Matrix",
+          "value": 4
+        }
+      ]
+    }
+  ],
+  "events": [],
+  "functions": [
+    {
+      "id": "UiTransforms.ClearTransform",
+      "name": "ClearTransform",
+      "cpp": "GameEngine::UI::Script::ClearTransform",
+      "header": "UI/UiTransformsScriptApi.h",
+      "line": 60,
+      "doc": "Remove the transform override so authored styles apply again. Main thread only. Returns false if the element is no longer reachable from this UIManager's root.",
+      "thread": "main",
+      "context": "UIManager",
+      "returns": {
+        "kind": "Bool"
+      },
+      "params": [
+        {
+          "name": "instanceId",
+          "kind": "UInt64"
+        }
+      ]
+    },
+    {
+      "id": "UiTransforms.ClearTransformOrigin",
+      "name": "ClearTransformOrigin",
+      "cpp": "GameEngine::UI::Script::ClearTransformOrigin",
+      "header": "UI/UiTransformsScriptApi.h",
+      "line": 70,
+      "doc": "Remove the origin override so authored styles apply again. Main thread only. Returns false if the element is no longer reachable from this UIManager's root.",
+      "thread": "main",
+      "context": "UIManager",
+      "returns": {
+        "kind": "Bool"
+      },
+      "params": [
+        {
+          "name": "instanceId",
+          "kind": "UInt64"
+        }
+      ]
+    },
+    {
+      "id": "UiTransforms.SetTransform",
+      "name": "SetTransform",
+      "cpp": "GameEngine::UI::Script::SetTransform",
+      "header": "UI/UiTransformsScriptApi.h",
+      "line": 55,
+      "doc": "Replace the live element's transform override, copying the operations before returning. An empty span overrides authored transforms with none. Returns false for an unreachable element or invalid operation, preserving the previous override. Main thread only.",
+      "thread": "main",
+      "context": "UIManager",
+      "returns": {
+        "kind": "Bool"
+      },
+      "params": [
+        {
+          "name": "instanceId",
+          "kind": "UInt64"
+        },
+        {
+          "name": "operations",
+          "kind": "Span",
+          "element": {
+            "kind": "Record",
+            "type": "UiTransforms.UiTransformOperation"
+          }
+        }
+      ]
+    },
+    {
+      "id": "UiTransforms.SetTransformOrigin",
+      "name": "SetTransformOrigin",
+      "cpp": "GameEngine::UI::Script::SetTransformOrigin",
+      "header": "UI/UiTransformsScriptApi.h",
+      "line": 65,
+      "doc": "Override the pivot in border-box pixels or percent. Main thread only. Returns false for an unreachable element or non-finite length, preserving the old origin.",
+      "thread": "main",
+      "context": "UIManager",
+      "returns": {
+        "kind": "Bool"
+      },
+      "params": [
+        {
+          "name": "instanceId",
+          "kind": "UInt64"
+        },
+        {
+          "name": "x",
+          "kind": "Record",
+          "type": "UiTransforms.UiLength"
+        },
+        {
+          "name": "y",
+          "kind": "Record",
+          "type": "UiTransforms.UiLength"
+        }
+      ]
+    }
+  ],
+  "handles": [],
+  "records": [
+    {
+      "id": "UiTransforms.UiLength",
+      "name": "UiLength",
+      "cpp": "GameEngine::UI::Script::UiLength",
+      "header": "UI/UiTransformsScriptApi.h",
+      "line": 28,
+      "doc": "A length in pixels or percent of the element's border box (100 means 100%).",
+      "size": 8,
+      "align": 4,
+      "fields": [
+        {
+          "name": "Value",
+          "kind": "Float",
+          "offset": 0,
+          "default": "0"
+        },
+        {
+          "name": "IsPercent",
+          "kind": "Bool",
+          "offset": 4,
+          "default": "false"
+        }
+      ]
+    },
+    {
+      "id": "UiTransforms.UiTransformOperation",
+      "name": "UiTransformOperation",
+      "cpp": "GameEngine::UI::Script::UiTransformOperation",
+      "header": "UI/UiTransformsScriptApi.h",
+      "line": 38,
+      "doc": "One transform in CSS list order. Translate uses A/B as x/y lengths; Scale uses A/B; Rotate uses A in degrees; Skew uses A/B in degrees; Matrix uses A through F. XIsPercent/YIsPercent apply only to Translate. All numeric fields must be finite.",
+      "size": 32,
+      "align": 4,
+      "fields": [
+        {
+          "name": "Function",
+          "kind": "Enum",
+          "type": "UiTransforms.TransformFunction",
+          "offset": 0,
+          "default": "Translate"
+        },
+        {
+          "name": "A",
+          "kind": "Float",
+          "offset": 4,
+          "default": "0"
+        },
+        {
+          "name": "B",
+          "kind": "Float",
+          "offset": 8,
+          "default": "0"
+        },
+        {
+          "name": "C",
+          "kind": "Float",
+          "offset": 12,
+          "default": "0"
+        },
+        {
+          "name": "D",
+          "kind": "Float",
+          "offset": 16,
+          "default": "0"
+        },
+        {
+          "name": "E",
+          "kind": "Float",
+          "offset": 20,
+          "default": "0"
+        },
+        {
+          "name": "F",
+          "kind": "Float",
+          "offset": 24,
+          "default": "0"
+        },
+        {
+          "name": "XIsPercent",
+          "kind": "Bool",
+          "offset": 28,
+          "default": "false"
+        },
+        {
+          "name": "YIsPercent",
+          "kind": "Bool",
+          "offset": 29,
+          "default": "false"
+        }
+      ]
+    }
+  ]
+}

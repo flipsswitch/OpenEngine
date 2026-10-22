@@ -24,6 +24,7 @@ set(UI_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/StyleApplier.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/TransitionEngine.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/UITransform.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UiTransformsScriptApi.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/ResolvedStyle.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager_StyleResolve.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager_StyleAnalysis.cpp
@@ -661,6 +662,7 @@ if(BUILD_TESTING)
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/GameUIHostTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/GameUIHostKeyboardTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/GameUIElementHandleTests.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/UiTransformScriptTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/UIIdleGateTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ManagedElementOrphanTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ManagedTypeLifecycleTests.cpp
