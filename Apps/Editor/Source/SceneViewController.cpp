@@ -3534,12 +3534,13 @@ void SceneViewController::FrameAll()
     // Frame all objects in the scene by calculating a bounding box that encompasses everything
     using GameEngine::Components::LocalBounds;
     using GameEngine::Components::WorldTransform;
+    using Mathematics::Vector3;
 
     auto* world = &GetWorld();
 
     // Calculate combined bounds
-    float minBounds[3] = {std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};
-    float maxBounds[3] = {std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest()};
+    Vector3 minBounds{std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};
+    Vector3 maxBounds{std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest()};
     bool foundAny = false;
 
     // Iterate through all entities that have LocalBounds and compute world AABBs
@@ -3583,44 +3584,28 @@ void SceneViewController::FrameAll()
 
     if (!m_Is2DMode && !m_Orthographic)
     {
-        FramePerspectiveBounds({{minBounds[0], minBounds[1], minBounds[2]},
-                                {maxBounds[0], maxBounds[1], maxBounds[2]}});
+        FramePerspectiveBounds({minBounds, maxBounds});
         return;
     }
 
     // Calculate center of combined bounds
-    float target[3] = {
-        (minBounds[0] + maxBounds[0]) * 0.5f,
-        (minBounds[1] + maxBounds[1]) * 0.5f,
-        (minBounds[2] + maxBounds[2]) * 0.5f};
-
-    float extent[3] = {
-        (maxBounds[0] - minBounds[0]) * 0.5f,
-        (maxBounds[1] - minBounds[1]) * 0.5f,
-        (maxBounds[2] - minBounds[2]) * 0.5f};
+    const Vector3 target = (minBounds + maxBounds) * 0.5f;
+    const Vector3 extent = (maxBounds - minBounds) * 0.5f;
 
     // Place the camera to look at the target from the current viewing direction
     float yawR = m_CamYawDeg * 3.1415926535f / 180.0f;
     float pitR = m_CamPitchDeg * 3.1415926535f / 180.0f;
-    float dir[3] = {
-        std::cos(pitR) * std::cos(yawR),
-        std::sin(pitR),
-        std::cos(pitR) * std::sin(yawR)};
-    Normalize3(dir);
+    const Vector3 dir = Vector3(std::cos(pitR) * std::cos(yawR),
+                               std::sin(pitR),
+                               std::cos(pitR) * std::sin(yawR)).NormalizeOrZero();
 
     if (m_Is2DMode || m_Orthographic)
     {
         // In orthographic modes, m_CamDistance is the visible height.
         // Use the scene extent projected onto the screen axes for best fit.
         const float aspect = (m_LastH > 0) ? static_cast<float>(m_LastW) / static_cast<float>(m_LastH) : 1.0f;
-        const float worldUp[3] = {0.0f, 1.0f, 0.0f};
-        float right[3];
-        Cross3(worldUp, dir, right);
-        Normalize3(right);
-
-        float up[3];
-        Cross3(dir, right, up);
-        Normalize3(up);
+        const Vector3 right = Vector3::Cross(Vector3(0.0f, 1.0f, 0.0f), dir).NormalizeOrZero();
+        const Vector3 up = Vector3::Cross(dir, right).NormalizeOrZero();
 
         const float halfW = std::abs(right[0]) * extent[0] + std::abs(right[1]) * extent[1] + std::abs(right[2]) * extent[2];
         const float halfH = std::abs(up[0]) * extent[0] + std::abs(up[1]) * extent[1] + std::abs(up[2]) * extent[2];

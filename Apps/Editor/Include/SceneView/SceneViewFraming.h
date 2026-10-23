@@ -56,10 +56,14 @@ bool ComputeSubtreeWorldBounds(ECS::World& world, ECS::EntityHandle root, Subtre
 bool ComputeLookAtPose(const Mathematics::Vector3& target, const Mathematics::Vector3& direction, float distance,
                        SceneViewCameraPose& out);
 
+/// Fits world-space bounds with padding and a centered orbit pivot, tilting edge-on planes.
+/// Requires a vertical field of view in (0, 180) degrees, aspect > 0 and nearClip > 0.
+/// Distances use world units; aspect is viewport width divided by height.
 SceneViewCameraPose ComputePerspectiveFramingPose(const Mathematics::AABB& bounds,
                                                   const SceneViewCameraPose& currentPose,
                                                   float fieldOfViewDeg, float aspect, float nearClip);
 
+/// Extends the Scene View far plane for an orbit distance without reducing farClip.
 float ExpandFarClipForFraming(float farClip, float distance);
 
 } // namespace GameEngine::Editor

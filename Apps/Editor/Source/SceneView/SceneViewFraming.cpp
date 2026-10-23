@@ -7,6 +7,7 @@
 #include "ECS/ECSTemplates.h"
 #include "ECS/Entity.h"
 #include "ECS/World.h"
+#include "Mathematics/Matrix4x4.h"
 #include "Mathematics/VectorOps.h"
 #include "SceneView/SceneViewCameraRig.h"
 #include "SceneViewController.h"
@@ -126,11 +127,11 @@ SceneViewCameraPose ComputePerspectiveFramingPose(const Mathematics::AABB& bound
 
     SceneViewCameraPose result = currentPose;
     ComputeLookAtPose(center, look, nearClip, result);
-    float view[16];
-    CameraRig::BuildViewMatrixLH({}, result.YawDeg, result.PitchDeg, view);
-    const Vector3 right(view[0], view[4], view[8]);
-    const Vector3 up(view[1], view[5], view[9]);
-    look = Vector3(view[2], view[6], view[10]);
+    Mathematics::Matrix4x4 view;
+    CameraRig::BuildViewMatrixLH({}, result.YawDeg, result.PitchDeg, view.Data());
+    const Vector3 right(view[0].x, view[1].x, view[2].x);
+    const Vector3 up(view[0].y, view[1].y, view[2].y);
+    look = Vector3(view[0].z, view[1].z, view[2].z);
 
     constexpr float kFramingPadding = 1.1f;
     const float tanHalfVertical = std::tan(fieldOfViewDeg * Mathematics::Pi / 360.0f);
