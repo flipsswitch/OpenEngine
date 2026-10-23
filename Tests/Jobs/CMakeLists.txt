@@ -125,6 +125,7 @@ set(HOTRELOAD_PIPELINE_TEST_SOURCES
     CompileServerTestHost.cpp
     ScriptManagerCompileServerIntegrationTest.cpp
     ScriptsProjectGenerationTests.cpp
+    ScriptsProjectFileTests.cpp
     ScriptingAbiHandshakeTests.cpp
     PackageScriptCompileTests.cpp
 )

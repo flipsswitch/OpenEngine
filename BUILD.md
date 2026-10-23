@@ -268,6 +268,8 @@ cmake --build --preset linux-x64-local --target ECSCoreTests
 ./build/linux-x64-local/bin/Debug/Tests/ECSCoreTests
 ```
 
+On a machine with OBS Studio installed, set `DISABLE_VULKAN_OBS_CAPTURE=1` before you run a GPU suite directly, so that OBS's Vulkan layer stays out of the test process; ctest sets it for every test it runs.
+
 Through ctest: `ctest --test-dir build/<preset> -C <Config> -R "^ECSCoreTest\." --output-on-failure`. Some suites register under their executable's name and others register each test case (`ECSCoreTest.SomeCase`), so `ctest --test-dir build/<preset> -C <Config> -N -R <pattern>` first lists what a filter matches; a filter that lists nothing runs nothing.
 
 With `BUILD_TESTING=ON` and `ENABLE_SCRIPTING=ON`, the managed ABI suite is available on Windows, macOS, and Linux:
@@ -289,7 +291,7 @@ Every MCP tool as a command in one native executable; Node.js is needed to build
 cmake --build --preset vs2026-x64-local --config DebugFast --target GameEngineCli
 build\vs2026-x64-local\bin\DebugFast\gameenginecli.exe list
 build\vs2026-x64-local\bin\DebugFast\gameenginecli.exe get_editor_state
-build\vs2026-x64-local\bin\DebugFast\gameenginecli.exe get_log --count 50 --min-level warning
+build\vs2026-x64-local\bin\DebugFast\gameenginecli.exe get_log --min-level warning --pattern "shader|pipeline"
 ```
 
 Usage, argument shapes and exit codes: [docs/getting-started/mcp-setup.mdx](docs/getting-started/mcp-setup.mdx).
