@@ -108,7 +108,7 @@ SceneViewCameraPose ComputePerspectiveFramingPose(const Mathematics::AABB& bound
     const auto forward = CameraRig::LookDirection(currentPose.YawDeg, currentPose.PitchDeg);
     Vector3 look(static_cast<float>(forward.X), static_cast<float>(forward.Y), static_cast<float>(forward.Z));
 
-    constexpr float kPlanarThicknessRatio = 0.001f;
+    constexpr float kPlanarThicknessRatio = 0.1f;
     constexpr float kMinimumPlaneViewSine = 0.5f;
     const float planarThickness = std::max({halfExtents.x, halfExtents.y, halfExtents.z}) * kPlanarThicknessRatio;
     for (size_t axis = 0; axis < 3; ++axis)
@@ -121,7 +121,7 @@ SceneViewCameraPose ComputePerspectiveFramingPose(const Mathematics::AABB& bound
 
         look[axis] = 0.0f;
         look = look.NormalizeOrZero() * std::sqrt(1.0f - kMinimumPlaneViewSine * kMinimumPlaneViewSine);
-        look[axis] = currentPose.Pos[axis] < center[axis] ? kMinimumPlaneViewSine : -kMinimumPlaneViewSine;
+        look[axis] = currentPose.Pos[axis] < bounds.min[axis] ? kMinimumPlaneViewSine : -kMinimumPlaneViewSine;
         break;
     }
 

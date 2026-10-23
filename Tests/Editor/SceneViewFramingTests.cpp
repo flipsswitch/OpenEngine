@@ -318,4 +318,33 @@ TEST(SceneViewPerspectiveFraming, WideAngleFocusKeepsAnOrbitOutsideTheBounds)
                               Editor::ExpandFarClipForFraming(3000.0f, pose.Distance));
 }
 
+TEST(SceneViewPerspectiveFraming, SceneBoundsWithObjectsOnTheFloorStayPlanar)
+{
+    using namespace GameEngine;
+    for (float height : {1.0f, 50.0f})
+    {
+        const Mathematics::AABB bounds{{-3000.0f, 0.0f, -3000.0f}, {3000.0f, height, 3000.0f}};
+        constexpr float kAspect = 16.0f / 9.0f;
+        const auto pose = Editor::ComputePerspectiveFramingPose(bounds, DefaultFramingPose(), 60.0f, kAspect, 0.1f);
+        EXPECT_GT(pose.Pos[1], height);
+        EXPECT_LE(pose.PitchDeg, -30.0f + kEpsilon);
+        ExpectBoundsInsideFrustum(bounds, pose, 60.0f, kAspect, 0.1f,
+                                  Editor::ExpandFarClipForFraming(3000.0f, pose.Distance));
+    }
+}
+
+TEST(SceneViewPerspectiveFraming, LowCameraAboveTheFloorKeepsTheViewAboveIt)
+{
+    using namespace GameEngine;
+    const Mathematics::AABB bounds{{-3000.0f, 0.0f, -3000.0f}, {3000.0f, 1.0f, 3000.0f}};
+    auto current = DefaultFramingPose();
+    current.Pos[1] = 0.1f;
+    constexpr float kAspect = 16.0f / 9.0f;
+    const auto pose = Editor::ComputePerspectiveFramingPose(bounds, current, 60.0f, kAspect, 0.1f);
+    EXPECT_GT(pose.Pos[1], bounds.max.y);
+    EXPECT_LE(pose.PitchDeg, -30.0f + kEpsilon);
+    ExpectBoundsInsideFrustum(bounds, pose, 60.0f, kAspect, 0.1f,
+                              Editor::ExpandFarClipForFraming(3000.0f, pose.Distance));
+}
+
 }
