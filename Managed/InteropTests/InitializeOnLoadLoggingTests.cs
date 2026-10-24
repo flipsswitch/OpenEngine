@@ -1,5 +1,6 @@
 using System;
 using System.Reflection;
+using System.Linq;
 using System.Threading.Tasks;
 using NUnit.Framework;
 
@@ -37,9 +38,9 @@ namespace GameEngine.ManagedInteropTests
                 var miPreload = hrm.GetMethod("PreloadAssemblyContext", BindingFlags.Public | BindingFlags.Static, null, new[] { typeof(byte[]), typeof(byte[]) }, null)!;
                 var miSwap = hrm.GetMethod("SwapPreloadedContext", BindingFlags.Public | BindingFlags.Static)!;
                 var miWait = hrm.GetMethod("WaitForPendingInitializeOnLoadAsync", BindingFlags.Public | BindingFlags.Static)!;
-                var miGetCurrAsm = hrm.GetMethod("GetCurrentAssembly", BindingFlags.Public | BindingFlags.Static)!;
 
-                var (asm, pdb) = ScriptCompileHelper.CompileCustomSources(csSource);
+                var assemblyName = "InitializeOnLoadLogging_" + Guid.NewGuid().ToString("N");
+                var (asm, pdb) = ScriptCompileHelper.CompileCustomSources(csSource, assemblyName);
 
                 int preRc = (int)miPreload.Invoke(null, new object?[] { asm, pdb })!;
                 Assert.That(preRc, Is.EqualTo(0), "Preload failed");
@@ -50,7 +51,8 @@ namespace GameEngine.ManagedInteropTests
                 var t = (Task<bool>)miWait.Invoke(null, new object?[] { 5000 })!;
                 Assert.That(t.GetAwaiter().GetResult(), Is.True, "InitializeOnLoad did not complete within timeout");
 
-                var currAsm = (System.Reflection.Assembly?)miGetCurrAsm.Invoke(null, null);
+                var currAsm = GameEngine.HotReload.HotReloadManager.GetActiveUserAssemblies()
+                    .Single(assembly => assembly.GetName().Name == assemblyName);
                 Assert.That(currAsm, Is.Not.Null, "Current assembly missing after swap");
                 var initType = currAsm!.GetType("TestScripts.Init", throwOnError: true)!;
                 return initType;
@@ -118,9 +120,9 @@ namespace GameEngine.ManagedInteropTests
 	                var miPreload = hrm.GetMethod("PreloadAssemblyContext", BindingFlags.Public | BindingFlags.Static, null, new[] { typeof(byte[]), typeof(byte[]) }, null)!;
 	                var miSwap = hrm.GetMethod("SwapPreloadedContext", BindingFlags.Public | BindingFlags.Static)!;
 	                var miWait = hrm.GetMethod("WaitForPendingInitializeOnLoadAsync", BindingFlags.Public | BindingFlags.Static)!;
-	                var miGetCurrAsm = hrm.GetMethod("GetCurrentAssembly", BindingFlags.Public | BindingFlags.Static)!;
 
-	                var (asm, pdb) = ScriptCompileHelper.CompileCustomSources(csSource);
+	                var assemblyName = "InitializeOnLoadLogging_" + Guid.NewGuid().ToString("N");
+                var (asm, pdb) = ScriptCompileHelper.CompileCustomSources(csSource, assemblyName);
 	                int preRc = (int)miPreload.Invoke(null, new object?[] { asm, pdb })!;
 	                Assert.That(preRc, Is.EqualTo(0), "Preload failed");
 
@@ -130,7 +132,8 @@ namespace GameEngine.ManagedInteropTests
 	                var t = (Task<bool>)miWait.Invoke(null, new object?[] { 5000 })!;
 	                Assert.That(t.GetAwaiter().GetResult(), Is.True, "InitializeOnLoad did not complete within timeout");
 
-	                var currAsm = (System.Reflection.Assembly?)miGetCurrAsm.Invoke(null, null);
+	                var currAsm = GameEngine.HotReload.HotReloadManager.GetActiveUserAssemblies()
+                    .Single(assembly => assembly.GetName().Name == assemblyName);
 	                Assert.That(currAsm, Is.Not.Null, "Current assembly missing after swap");
 	                var initType = currAsm!.GetType("TestScripts.Init", throwOnError: true)!;
 	                return initType;

@@ -708,16 +708,11 @@ void UIManager::Update(float deltaTime, bool interactive)
     }
 
 
-    // Coalesce font-resolution invalidations: while fonts stream in, both
-    // gates above decline (m_FontResolvedDirty), so every install lands in a
-    // heavy pass whose BuildYoga measure-input diff picks up the new atlas.
-    // Cleared only once the in-flight batch is complete AND a heavy pass is
-    // actually running — clearing before the gates would let the batch's
-    // final install be idle-gated away without ever reflowing.
-    if (m_FontResolvedDirty && m_FontFamilyInFlight.empty())
-    {
-        m_FontResolvedDirty = false;
-    }
+    // Font installs change intrinsic measurements without dirtying elements.
+    // Consume the signal only after the frame gates, and recheck every retained
+    // text input below. Requests still in flight raise their own signal on completion.
+    const bool fontsChanged = m_FontResolvedDirty;
+    m_FontResolvedDirty = false;
 
     // We are about to do a heavy pass that will handle all outstanding dirty. Clear any dirty hints
     // observed so far; new dirty marks during this pass will be preserved for the next frame.
@@ -738,7 +733,8 @@ void UIManager::Update(float deltaTime, bool interactive)
     const bool computeLayoutSignaturesAll =
         viewportChanged ||
         contentScaleChanged ||
-        globalStylesheetSetChanged;
+        globalStylesheetSetChanged ||
+        fontsChanged;
     bool computeLayoutSignaturesThisFrame =
         computeLayoutSignaturesAll ||
         relayoutRequestedPre ||
@@ -1908,6 +1904,7 @@ void UIManager::Update(float deltaTime, bool interactive)
     if (forceGlobalStyle)            MarkPrimitivesNeedRegen(0x4u);
     if (viewportChanged)             MarkPrimitivesNeedRegen(0x8u);
     if (relayoutRequestedPre)        MarkPrimitivesNeedRegen(0x10u);
+    if (fontsChanged)                MarkPrimitivesNeedRegen(0x200u);
     // Scroll translation is drain-only: ApplyScrollTransforms queues the
     // translated subtree and the drain re-emits it at the patched rects.
     if (m_TransitionEngine && m_TransitionEngine->HasActiveTransitions())
