@@ -19,7 +19,7 @@ struct EnvironmentEdit;
 // Result of running a shell command through CancellableShellProcess.
 struct ShellProcessResult
 {
-    int         exitCode = -1;  // process exit code; -1 if the process never started
+    int         exitCode = -1;  ///< Child exit code, or -1 if launch or exit collection fails.
     std::string output;         // shell Run and RunProcessCaptured only: merged child
                                 // output (stderr is included when the caller
                                 // redirects with "2>&1"); the argv Run leaves it empty
