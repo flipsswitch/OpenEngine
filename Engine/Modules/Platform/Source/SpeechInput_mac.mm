@@ -1,5 +1,4 @@
 #include "Platform/SpeechInput.h"
-#include "SpeechAudioTap_mac.h"
 
 #import <AVFoundation/AVFoundation.h>
 #import <Speech/Speech.h>
@@ -10,6 +9,31 @@
 
 namespace GameEngine {
 namespace Platform {
+
+namespace Detail
+{
+bool InstallSpeechAudioTap(AVAudioNode* node, AVAudioFormat* format,
+                           AVAudioNodeTapBlock block, NSError** error)
+{
+    // Audio taps support 100 to 400 ms requests; use the shortest duration at the device's rate.
+    constexpr double kBufferDurationSeconds = 0.1;
+    const auto frames = static_cast<AVAudioFrameCount>(std::ceil(format.sampleRate * kBufferDurationSeconds));
+#if __MAC_OS_X_VERSION_MIN_REQUIRED >= 270000
+    return [node installTapOnBus:0 bufferSize:frames format:format error:error block:block];
+#else
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 270000
+    if (@available(macOS 27.0, *))
+        return [node installTapOnBus:0 bufferSize:frames format:format error:error block:block];
+    else
+#endif
+    {
+        [node installTapOnBus:0 bufferSize:frames format:format block:block];
+        return true;
+    }
+#endif
+}
+} // namespace Detail
+
 namespace {
 
 // How long Finish() waits for the recognizer's last words after the microphone stops.

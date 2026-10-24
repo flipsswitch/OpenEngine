@@ -1,10 +1,17 @@
-#include "SpeechAudioTap_mac.h"
+#import <AVFoundation/AVFoundation.h>
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <atomic>
 #include <memory>
+
+// The tests call the private tap operation from the linked speech implementation.
+namespace GameEngine::Platform::Detail
+{
+bool InstallSpeechAudioTap(AVAudioNode* node, AVAudioFormat* format,
+                           AVAudioNodeTapBlock block, NSError** error);
+}
 
 namespace
 {
