@@ -1,10 +1,9 @@
-#import <AVFoundation/AVFoundation.h>
-
-#include <gtest/gtest.h>
-
 #include <algorithm>
 #include <atomic>
 #include <memory>
+
+#import <AVFoundation/AVFoundation.h>
+#include <gtest/gtest.h>
 
 // The tests call the private tap operation from the linked speech implementation.
 namespace GameEngine::Platform::Detail
