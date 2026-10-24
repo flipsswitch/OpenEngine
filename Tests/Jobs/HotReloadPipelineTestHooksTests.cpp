@@ -561,6 +561,11 @@ private:
     std::shared_ptr<Gate> m_Gate;
 };
 
+struct CompileGateReleaser {
+    std::shared_ptr<GatedFakeTransport::Gate> Gate;
+    ~CompileGateReleaser() { Gate->Release(); }
+};
+
 } // namespace
 
 TEST(HotReloadPipelineSupersede, QueuedRunIsSupersededWithoutEverCompiling) {
@@ -664,8 +669,9 @@ TEST(HotReloadPipelineSupersede, QueuedRunIsSupersededWithoutEverCompiling) {
 }
 
 TEST(HotReloadPipelineSupersede, SupersededRunningCompileNeverWritesStaleDll) {
-#ifdef _WIN32
-    auto ws = MakeSupersedeWorkspace("GE_Supersede_StaleWrite");
+    const GameEngine::TestUtils::ScopedTempDir workspace(
+        GameEngine::TestUtils::MakeUniqueTempDirectory("GE_Supersede_StaleWrite"));
+    const auto& ws = workspace.Path();
     {
         std::ofstream f(ws / "Foo.cs");
         f << "public static class Foo { public static int V() => 1; }";
@@ -674,23 +680,27 @@ TEST(HotReloadPipelineSupersede, SupersededRunningCompileNeverWritesStaleDll) {
     std::filesystem::create_directories(asmDir);
     auto asmPath = asmDir / "GameEngine.Scripts.dll";
 
-    _putenv_s("GE_DISABLE_COMPILE_SERVER", "0");
+    GameEngine::Testing::SetEnvVar("GE_DISABLE_COMPILE_SERVER", "0");
 
-    // First compile (stale): blocks inside the server round-trip, answers
-    // "MZOLD". Second compile (fresh): answers "MZNEW" immediately.
+    {
+        std::ofstream initial(asmPath, std::ios::binary);
+        initial << "MZBASE";
+    }
+
     GameEngine::Tests::ScopedHotReloadTestHooks hookGuard;
     auto gate = std::make_shared<GatedFakeTransport::Gate>();
+    auto freshGate = std::make_shared<GatedFakeTransport::Gate>();
     auto transportCount = std::make_shared<std::atomic<int>>(0);
     SetCompileServerTransportFactoryForTests(
-        [gate, transportCount](const std::string&) -> std::unique_ptr<IHotReloadTransport> {
+        [gate, freshGate, transportCount](const std::string&) -> std::unique_ptr<IHotReloadTransport> {
             const int index = transportCount->fetch_add(1);
             if (index == 0) {
                 return std::make_unique<GatedFakeTransport>(R"({"Success":true,"AssemblyBytes":"TVpPTEQ="})", gate); // "MZOLD"
             }
-            return std::make_unique<GatedFakeTransport>(R"({"Success":true,"AssemblyBytes":"TVpORVc="})", nullptr); // "MZNEW"
+            return std::make_unique<GatedFakeTransport>(R"({"Success":true,"AssemblyBytes":"TVpORVc="})", freshGate); // "MZNEW"
         });
 
-    auto readDll = [&]() {
+    auto readDll = [&asmPath]() {
         std::ifstream f(asmPath, std::ios::binary);
         return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
     };
@@ -699,6 +709,9 @@ TEST(HotReloadPipelineSupersede, SupersededRunningCompileNeverWritesStaleDll) {
     {
         JobSystem::JobChannel compiles(*pool, JobSystem::JobChannelDesc{.Name = "Script compiles", .MaxRunning = 1});
         HotReloadPipeline pipeline(*pool, compiles);
+        // Release both transports before pipeline teardown, including fatal assertion exits.
+        CompileGateReleaser staleReleaser{gate};
+        CompileGateReleaser freshReleaser{freshGate};
         // Real CompileServerCompiler (default) for stage 1; hermetic mocks for stages 2-4.
         pipeline.SetAssemblyLoaderFactory([] { return std::make_unique<GameEngine::Tests::MockAssemblyLoader>(); });
         pipeline.SetSwapperFactory([] { return std::make_unique<GameEngine::Tests::MockAssemblySwapper>(true, 1); });
@@ -717,33 +730,33 @@ TEST(HotReloadPipelineSupersede, SupersededRunningCompileNeverWritesStaleDll) {
         // token check keeps its output off the disk.
         auto futB = pipeline.ExecuteAsync(asmPath.string());
 
-        ASSERT_EQ(futB.wait_for(std::chrono::seconds(15)), std::future_status::ready);
-        auto statsB = futB.get();
-        EXPECT_TRUE(statsB.success) << statsB.errorMessage;
-
         ASSERT_EQ(futA.wait_for(std::chrono::seconds(15)), std::future_status::ready);
         auto statsA = futA.get();
         EXPECT_FALSE(statsA.success);
         EXPECT_EQ(statsA.result, HotReloadResult::CancelledByNewOperation);
 
-        // Fresh DLL is on disk while the stale compile is still in flight.
+        EXPECT_EQ(futB.wait_for(std::chrono::milliseconds(300)), std::future_status::timeout);
+        EXPECT_FALSE(freshGate->CompileRequestSeen.load());
+
+        gate->Release();
+        const auto freshDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (!freshGate->CompileRequestSeen.load() && std::chrono::steady_clock::now() < freshDeadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        ASSERT_TRUE(freshGate->CompileRequestSeen.load()) << "fresh compile never acquired the serial channel";
+        EXPECT_TRUE(gate->CompileResponseDelivered.load());
+
+        // The stale compile has finished; hold the fresh response so it cannot conceal a stale write.
+        EXPECT_EQ(readDll(), "MZBASE") << "superseded compile must leave the previous assembly intact";
+        freshGate->Release();
+
+        ASSERT_EQ(futB.wait_for(std::chrono::seconds(15)), std::future_status::ready);
+        auto statsB = futB.get();
+        EXPECT_TRUE(statsB.success) << statsB.errorMessage;
         EXPECT_EQ(readDll(), "MZNEW");
-
-        gate->Release(); // let the stale compile complete its round-trip
     }
-    // Pool teardown joins the worker running the stale compile; after this
-    // the stale run has fully completed.
     pool.reset();
-
-    EXPECT_TRUE(gate->CompileResponseDelivered.load())
-        << "stale compile should have completed normally (Cancel cannot abort a Running stage)";
     EXPECT_EQ(readDll(), "MZNEW") << "superseded compile must not overwrite the newer DLL";
-
-    std::error_code ec;
-    std::filesystem::remove_all(ws, ec);
-#else
-    GTEST_SKIP() << "Windows-only in this environment";
-#endif
 }
 
 TEST(HotReloadPipelineSupersede, RapidFireSupersedeLastWinsAndNothingHangs) {
