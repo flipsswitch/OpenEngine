@@ -89,11 +89,12 @@ public:
     CancellableShellProcess(const CancellableShellProcess&) = delete;
     CancellableShellProcess& operator=(const CancellableShellProcess&) = delete;
 
-    // Execute `command` via the platform shell (cmd /C on Windows, /bin/sh -c on
-    // POSIX), capturing merged output. `onLine`, when set, is invoked once per
-    // completed output line (without the trailing newline). `shouldCancel` is
-    // polled periodically; when it returns true — or Kill() is called — the child
-    // is terminated and the result holds whatever output was captured so far.
+    /// Executes `command` via the platform shell (cmd /C on Windows, /bin/sh -c on
+    /// POSIX), capturing merged output. `onLine`, when set, is invoked once per
+    /// completed output line (without the trailing newline). `shouldCancel` is
+    /// polled until the child exits, even after output closes. When it returns true
+    /// or Kill() is called, the child is terminated and the result holds whatever
+    /// output was captured so far.
     ShellProcessResult Run(const std::string& command,
                            std::function<bool()> shouldCancel,
                            std::function<void(const std::string& line)> onLine);
@@ -116,6 +117,8 @@ public:
 
 private:
     void TerminateChildLocked();  // call with m_HandleMutex held
+    void PollCancellation(const std::function<bool()>& shouldCancel, bool& cancelled);
+    int WaitForExit(const std::function<bool()>& shouldCancel, bool& cancelled);
 
     std::mutex        m_HandleMutex;        // guards the live child handle/pid
     std::atomic<bool> m_KillRequested{false};
