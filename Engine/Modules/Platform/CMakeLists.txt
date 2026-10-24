@@ -286,6 +286,13 @@ if(BUILD_TESTING)
         Tests/ThreadNameTests.cpp
     )
 
+    if(APPLE)
+        target_sources(PlatformCapabilitiesTests PRIVATE Tests/SpeechAudioTapTests_mac.mm)
+        set_source_files_properties(Tests/SpeechAudioTapTests_mac.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_include_directories(PlatformCapabilitiesTests PRIVATE Source)
+        target_link_libraries(PlatformCapabilitiesTests PRIVATE "-framework AVFoundation")
+    endif()
+
     target_link_libraries(PlatformCapabilitiesTests
         PRIVATE
             Engine
