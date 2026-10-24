@@ -1008,14 +1008,16 @@ void CloseFd(int& fd)
 }
 
 // Writes the payload to the child's stdin, then closes it so the child sees the
-// end of input. SIGPIPE is blocked on this thread, so a child that exits early
-// fails the write with EPIPE instead of killing the editor.
+// end of input. The stdin pipe suppresses SIGPIPE on macOS; other POSIX systems
+// block it on this writer thread so an early child exit only fails the write.
 void WriteStdin(int fd, const std::string& payload)
 {
+#if !defined(__APPLE__)
     sigset_t pipeSignal;
     sigemptyset(&pipeSignal);
     sigaddset(&pipeSignal, SIGPIPE);
     ::pthread_sigmask(SIG_BLOCK, &pipeSignal, nullptr);
+#endif
 
     std::size_t offset = 0;
     while (offset < payload.size())
@@ -1100,6 +1102,18 @@ ShellProcessResult CancellableShellProcess::Run(const ProcessLaunch& launch,
             CloseFd(*fd);
         return result;
     }
+
+#if defined(__APPLE__)
+    // Darwin delivers a broken-pipe signal to the process, not just the writer thread.
+    if (::fcntl(stdinFds[1], F_SETNOSIGPIPE, 1) != 0)
+    {
+        Logger::Log::Error("[CancellableShellProcess] could not suppress stdin SIGPIPE (errno={})", errno);
+        for (int* fd : {&stdinFds[0], &stdinFds[1], &stdoutFds[0], &stdoutFds[1], &stderrFds[0], &stderrFds[1],
+                        &statusFds[0], &statusFds[1]})
+            CloseFd(*fd);
+        return result;
+    }
+#endif
 
     // Everything the child needs is built before fork().
     std::vector<std::string> storage;
