@@ -9,6 +9,31 @@
 
 namespace GameEngine {
 namespace Platform {
+
+namespace Detail
+{
+bool InstallSpeechAudioTap(AVAudioNode* node, AVAudioFormat* format,
+                           AVAudioNodeTapBlock block, NSError** error)
+{
+    // Audio taps support 100 to 400 ms requests; use the shortest duration at the device's rate.
+    constexpr double kBufferDurationSeconds = 0.1;
+    const auto frames = static_cast<AVAudioFrameCount>(std::ceil(format.sampleRate * kBufferDurationSeconds));
+#if __MAC_OS_X_VERSION_MIN_REQUIRED >= 270000
+    return [node installTapOnBus:0 bufferSize:frames format:format error:error block:block];
+#else
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 270000
+    if (@available(macOS 27.0, *))
+        return [node installTapOnBus:0 bufferSize:frames format:format error:error block:block];
+    else
+#endif
+    {
+        [node installTapOnBus:0 bufferSize:frames format:format block:block];
+        return true;
+    }
+#endif
+}
+} // namespace Detail
+
 namespace {
 
 // How long Finish() waits for the recognizer's last words after the microphone stops.
@@ -150,7 +175,8 @@ struct SpeechInput::Impl : std::enable_shared_from_this<SpeechInput::Impl>
             SFSpeechAudioBufferRecognitionRequest* audioRequest = request;
             std::weak_ptr<Impl> weak = shared_from_this();
             auto smoothed = std::make_shared<LevelArray>();
-            [input installTapOnBus:0 bufferSize:1024 format:format block:^(AVAudioPCMBuffer* buffer, AVAudioTime*) {
+            NSError* tapError = nil;
+            const bool installed = Detail::InstallSpeechAudioTap(input, format, ^(AVAudioPCMBuffer* buffer, AVAudioTime*) {
                 [audioRequest appendAudioPCMBuffer:buffer];
                 auto owner = weak.lock();
                 if (!owner || owner->levelPending.exchange(true))
@@ -165,7 +191,12 @@ struct SpeechInput::Impl : std::enable_shared_from_this<SpeechInput::Impl>
                     if (self->running && self->generation == token && self->callbacks.Levels)
                         self->callbacks.Levels(levels);
                 });
-            }];
+            }, &tapError);
+            if (!installed)
+            {
+                End("Microphone capture could not start: " + Utf8(tapError.localizedDescription));
+                return;
+            }
             tapped = true;
             task = [recognizer recognitionTaskWithRequest:request resultHandler:^(SFSpeechRecognitionResult* result, NSError* error) {
                 auto owner = weak.lock();
