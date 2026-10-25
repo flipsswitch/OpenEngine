@@ -194,7 +194,7 @@ TEST_F(DayCycleEditorTests, TheScrubIsOffWithANoticeUnderAFollowedLightAndASunSe
     followed.TimeOfDayDrivesSunLight = false;
     SetSky(followed);
     {
-        DayCycleScrub scrub(World, Sky, &Undo, &Notifications, {});
+        DayCycleScrub scrub(World, Services().Sky, &Undo, &Notifications, {});
         EXPECT_NE(scrub.BlockedNotice().find("The sun follows the light Sun"), std::string::npos)
             << scrub.BlockedNotice();
         DayCycleWindow window(Services());
@@ -206,7 +206,7 @@ TEST_F(DayCycleEditorTests, TheScrubIsOffWithANoticeUnderAFollowedLightAndASunSe
     byHand.SunLight = {};
     byHand.AutoSunMoon = false;
     SetSky(byHand);
-    DayCycleScrub scrub(World, Sky, &Undo, &Notifications, {});
+    DayCycleScrub scrub(World, Services().Sky, &Undo, &Notifications, {});
     EXPECT_NE(scrub.BlockedNotice().find("The sun is set by hand"), std::string::npos) << scrub.BlockedNotice();
     DayCycleWindow window(Services());
     window.ScrubTo(18.5f);
@@ -239,7 +239,7 @@ TEST_F(DayCycleEditorTests, PlayModeEndsThePreviewAndTurnsTheScrubOff)
     EXPECT_FALSE(Sky.GetPreviewHour(World.GetWorldId()).has_value()) << "the preview played";
     window.ScrubTo(12.0f);
     EXPECT_FALSE(Sky.GetPreviewHour(World.GetWorldId()).has_value()) << "the scrub ran in Play mode";
-    DayCycleScrub scrub(World, Sky, &Undo, &Notifications, [this]() { return Playing; });
+    DayCycleScrub scrub(World, Services().Sky, &Undo, &Notifications, [this]() { return Playing; });
     EXPECT_EQ(scrub.BlockedNotice(), "The scrub is off in Play mode.");
 }
 
