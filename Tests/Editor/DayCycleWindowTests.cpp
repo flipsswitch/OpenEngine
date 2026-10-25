@@ -242,3 +242,61 @@ TEST_F(DayCycleEditorTests, PlayModeEndsThePreviewAndTurnsTheScrubOff)
     DayCycleScrub scrub(World, Sky, &Undo, &Notifications, [this]() { return Playing; });
     EXPECT_EQ(scrub.BlockedNotice(), "The scrub is off in Play mode.");
 }
+
+TEST_F(DayCycleEditorTests, ClosingTheWindowDoesNotReachAnUnavailableSkySystem)
+{
+    auto services = Services();
+    auto* currentSky = &Sky;
+    services.Sky = [&currentSky]() { return currentSky; };
+    auto window = std::make_unique<DayCycleWindow>(services);
+    window->ScrubTo(18.5f);
+    ASSERT_EQ(Sky.GetPreviewHour(World.GetWorldId()), 18.5f);
+
+    // Keep the retired system alive so an access after revocation fails deterministically.
+    currentSky = nullptr;
+    window.reset();
+    EXPECT_EQ(Sky.GetPreviewHour(World.GetWorldId()), 18.5f);
+}
+
+TEST_F(DayCycleEditorTests, TheScrubUsesTheCurrentSkySystem)
+{
+    Engine::Renderer::SkyEnvironmentSystem replacement(&Render);
+    auto* currentSky = &Sky;
+    auto services = Services();
+    services.Sky = [&currentSky]() { return currentSky; };
+    auto window = std::make_unique<DayCycleWindow>(services);
+    window->ScrubTo(18.5f);
+    ASSERT_EQ(Sky.GetPreviewHour(World.GetWorldId()), 18.5f);
+
+    currentSky = &replacement;
+    window->Refresh();
+    window->ScrubTo(7.0f);
+    EXPECT_EQ(replacement.GetPreviewHour(World.GetWorldId()), 7.0f);
+    EXPECT_EQ(Sky.GetPreviewHour(World.GetWorldId()), 18.5f);
+    window.reset();
+    EXPECT_FALSE(replacement.GetPreviewHour(World.GetWorldId()));
+    EXPECT_EQ(Sky.GetPreviewHour(World.GetWorldId()), 18.5f);
+}
+
+TEST_F(DayCycleEditorTests, TheWindowCanOutliveItsSkySystem)
+{
+    auto sky = std::make_unique<Engine::Renderer::SkyEnvironmentSystem>(&Render);
+    auto services = Services();
+    services.Sky = [&sky]() { return sky.get(); };
+    auto window = std::make_unique<DayCycleWindow>(services);
+    window->SetScrubHeld(true);
+    window->ScrubTo(18.5f);
+    ASSERT_EQ(sky->GetPreviewHour(World.GetWorldId()), 18.5f);
+
+    sky.reset();
+    window->Refresh();
+    window->SetScrubHeld(false);
+    window->ScrubTo(7.0f);
+    EXPECT_EQ(SkyNow().TimeOfDayHours, 10.0f);
+    Components::SkyEnvironment edited = SkyNow();
+    edited.TimeOfDayHours = 8.0f;
+    Editor::CommitComponentUpdate(&World, SkyEntity, &Notifications, edited);
+    Editor::NotifyWorldStructure(&Notifications, &World);
+    window.reset();
+    EXPECT_EQ(SkyNow().TimeOfDayHours, 8.0f);
+}
