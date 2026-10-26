@@ -1298,7 +1298,7 @@ void BuildPanel::OnBuildClicked()
 
         // Post UI update back to main thread (panel-only cosmetics; dropped
         // harmlessly if the panel closed mid-build).
-        this->PostAction([this, ok, cancelled,
+        this->PostSafeAction([this, ok, cancelled,
                           warningCount = buildWarnings.size()]() {
             UpdateBuildButtonState();
             UpdateRunningBuildDurations();
@@ -1344,8 +1344,8 @@ void BuildPanel::OnBuildProgress(const BuildProgress& progress)
         m_LatestProgress = progress;
     }
 
-    // Post progress UI update to main thread.
-    this->PostAction([this]() {
+    // The panel can be destroyed before the UI manager drains this update.
+    this->PostSafeAction([this]() {
         BuildProgress p;
         {
             std::lock_guard<std::mutex> lock(m_ProgressMutex);

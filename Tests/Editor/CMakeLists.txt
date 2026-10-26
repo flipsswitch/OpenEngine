@@ -620,6 +620,10 @@ set(EDITOR_TEST_SOURCES
 	# for. Leaf TU (the Build panel's status snapshot + nlohmann).
 	BuildStatusReportTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DebugServer/BuildStatusReport.cpp
+	BuildPanelLifetimeTests.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Panels/BuildPanel.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Settings/BuildRenderPipelineSettings.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Settings/RenderPipelineSettings.cpp
 	# Panel tab-icon defaults. The two panels compiled in are the light,
 	# self-contained end of the panel set (Engine-only dependencies) and are enough
 	# to exercise a real editor panel built the way the fallback docking path

@@ -73,6 +73,8 @@ public:
     StatusSnapshot GetBuildStatus();
 
 private:
+    friend struct BuildPanelTestAccess;
+
     void BuildUI();
     void LoadVersionsFromSettings();
     void RebuildHeader();
