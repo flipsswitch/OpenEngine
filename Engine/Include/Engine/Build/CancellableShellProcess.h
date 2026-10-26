@@ -89,12 +89,9 @@ public:
     CancellableShellProcess(const CancellableShellProcess&) = delete;
     CancellableShellProcess& operator=(const CancellableShellProcess&) = delete;
 
-    /// Executes `command` via the platform shell (cmd /C on Windows, /bin/sh -c on
-    /// POSIX), capturing merged output. `onLine`, when set, is invoked once per
-    /// completed output line (without the trailing newline). `shouldCancel` is
-    /// polled until the child exits, even after output closes. When it returns true
-    /// or Kill() is called, the child is terminated and the result holds whatever
-    /// output was captured so far.
+    /// Runs `command` through cmd /C (Windows) or /bin/sh -c (POSIX) and captures merged output.
+    /// `onLine` receives lines without newlines. `shouldCancel` is polled until exit, even after output closes.
+    /// A true callback result or Kill() terminates the child; the result retains captured output.
     ShellProcessResult Run(const std::string& command,
                            std::function<bool()> shouldCancel,
                            std::function<void(const std::string& line)> onLine);
