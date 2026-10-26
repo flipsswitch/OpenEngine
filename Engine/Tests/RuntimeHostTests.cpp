@@ -14,15 +14,16 @@
 // opens, the engine's schedule and a native script run every fixed frame in real time, and the
 // script's quit ends the run. It needs neither, so it never skips.
 
-#include <gtest/gtest.h>
-
 #include "AssetCore/GUID.h"
 #include "Assets/AssetManager.h"
 #include "Core/Application.h"
+#include "Core/ApplicationPaths.h"
 #include "Core/Engine.h"
 #include "ECS/Systems.h"
 #include "ECS/World.h"
 #include "ECSModules/Rendering/RenderingLoop.h"
+#include "Engine/GameUI/GameUIHost.h"
+#include "Engine/GameUI/GameplayUI.h"
 #include "Engine/Hosting/RuntimeFrameReadback.h"
 #include "Engine/Hosting/RuntimeHost.h"
 #include "Engine/Rendering/FrameOrchestrator.h"
@@ -32,8 +33,11 @@
 #include "Platform/Window.h"
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Core/Device.h"
+#include "Rendering/Text/FontAtlas.h"
 #include "ScopedPlatformCacheRoot.h"
 #include "Scripting/ScriptsConfig.h"
+#include "UI/ResolvedStyle.h"
+#include "UI/UIManager.h"
 
 #include <chrono>
 #include <filesystem>
@@ -42,6 +46,8 @@
 #include <optional>
 #include <system_error>
 #include <thread>
+
+#include <gtest/gtest.h>
 
 using namespace GameEngine;
 namespace fs = std::filesystem;
@@ -160,6 +166,26 @@ protected:
     int m_DeviceFailures = 0;
 };
 } // namespace
+
+TEST_F(RuntimeHostFrame, DefaultHudFontComesFromStagedAssetsWithASeparateProject)
+{
+    ASSERT_FALSE(fs::exists(m_Root / "Assets/Fonts/Roboto-Regular.ttf"));
+    ASSERT_TRUE(fs::exists(ApplicationPaths::GetInstallAssetsRoot() / "Fonts/Roboto-Regular.ttf"))
+        << "the runtime font must be staged beside the test executable";
+    ASSERT_EQ(m_Host->LoadRenderPipeline(), Engine::Renderer::PipelineResolveFailure::None);
+    ASSERT_TRUE(m_Host->OpenScene("Scenes/Empty.scene"));
+    m_Host->Render(1.0f / 60.0f);
+    m_Host->GetRenderDeviceContext()->GetDevice()->WaitForIdle();
+
+    auto* gameUi = GameUI::GetHost();
+    ASSERT_NE(gameUi, nullptr);
+    const auto* font = gameUi->GetUIManager()->ResolveFontForStyle(ResolvedStyle{});
+    ASSERT_NE(font, nullptr) << "a project without its own font must use the runtime's bundled default";
+    const auto face = font->GetFaceDebugInfo();
+    ASSERT_TRUE(face.has_value());
+    EXPECT_EQ(face->family, "Roboto");
+    EXPECT_EQ(face->style, "Regular");
+}
 
 TEST_F(RuntimeHostFrame, OneFrameCallsTheCompositeHookOnceAndItsReadbackResolves)
 {
