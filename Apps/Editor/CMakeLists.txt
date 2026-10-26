@@ -177,6 +177,7 @@ set(EDITOR_SOURCES
     Source/PlayMode/PlayButtonMenu.cpp
     Source/PlayMode/PlayButtonState.cpp
     Source/PlayMode/GameViewPointerLock.cpp
+    Source/PlayMode/WindowCursorLock.cpp
     Source/Scene/DefaultSceneEntities.cpp
     Source/Scene/SceneBackupRecovery.cpp
     Source/Scene/SceneDocumentManager.cpp
@@ -272,6 +273,7 @@ set(EDITOR_SOURCES
 	Source/Inspectors/NavigationAgentInspector.cpp
 	Source/Inspectors/NavigationSourceComponentTraits.cpp
 	Source/Inspectors/NavigationSurfaceInspector.cpp
+	Source/Inspectors/SplineRecipeInspector.cpp
 	Source/Inspectors/SkinnedMeshRendererInspector.cpp
 	Source/Inspectors/AnimatorInspector.cpp
 	Source/Inspectors/ValueCurveInspector.cpp
@@ -557,31 +559,10 @@ set(EDITOR_SOURCES
 	Source/SceneView/MountedViewPanels.cpp
 	Source/SceneView/ViewPresentationSnapshot.cpp
 	Source/SceneView/ViewSnapshotTexture.cpp
-	# Spline placement (tiles and fences along a spline, conformed via the editor raycast).
-	Source/Placement/FenceEmission.cpp
-	Source/Placement/FenceMitreVariants.cpp
-	Source/Placement/FencePieceReuse.cpp
-	Source/Placement/FenceRecipeLayout.cpp
+	Source/Editor/Registries/EditorServiceRegistry.cpp
+	# The editor's side of the spline recipes (SplineRecipes): the undo journal and the fence override remap.
 	Source/Placement/FenceSpanOverrideRemap.cpp
-	Source/Placement/FenceSpanOverrides.cpp
-	Source/Placement/PlacementGroundGap.cpp
-	Source/Placement/RecipeControllers.cpp
-	Source/Placement/RecipeValidation.cpp
-	Source/Placement/SplineFillRebuild.cpp
-	Source/Placement/SplineChunkCommit.cpp
-	Source/Placement/SplineChunkSlots.cpp
-	Source/Placement/SplineExtrudeController.cpp
-	Source/Placement/SplineExtrudeSanitize.cpp
-	Source/Placement/SplineFenceController.cpp
-	Source/Placement/SplineGroundAuthority.cpp
-	Source/Placement/SplinePieceMaterial.cpp
-	Source/Placement/SplinePlacementController.cpp
-	Source/Placement/SplineRebuildGate.cpp
-	Source/Placement/SplineSurfaceConform.cpp
-	Source/Placement/SplineSweepStations.cpp
-	Source/Placement/SplineWallBuild.cpp
-	Source/Placement/SplineWallController.cpp
-	Source/Placement/SplineWallSanitize.cpp
+	Source/Placement/RecipeEditorHooks.cpp
 	# The editor's pick over the engine's scene raycast: the eye, the pick providers, the root.
 	Source/Picking/ScenePick.cpp
 	Source/Picking/PickRootResolver.cpp
@@ -693,6 +674,8 @@ set(EDITOR_HEADERS
 	Include/Automation/UiReplayCommandIds.h
 	Include/Editor/EditorPaths.h
 	Include/Editor/Registries/EditorPluginRegistry.h
+	Include/Editor/Registries/EditorService.h
+	Include/Editor/Registries/EditorServiceRegistry.h
 	Include/Editor/Registries/BuiltInStatusBarItems.h
 	Include/Editor/Registries/StatusBarItemRegistry.h
 	Include/Editor/Settings/EditorHiDpiPlatformSettings.h
@@ -710,6 +693,7 @@ set(EDITOR_HEADERS
     Include/PlayMode/PlayButtonMenu.h
     Include/PlayMode/PlayButtonState.h
     Include/PlayMode/GameViewPointerLock.h
+    Include/PlayMode/WindowCursorLock.h
     Source/PlayMode/GameViewPointerLockRule.h
     Include/UndoRedo/VcsRevertCommand.h
     Include/UndoRedo/TagCommands.h

@@ -1,6 +1,6 @@
 // TerrainModifierSystem's height page overlay: what the modifiers add to a tiled terrain's base height
-// pages (design page-streaming 3.8, the baked-page cache), kept beside the tile bake so a modified
-// terrain renders every modifier from its first paged frame.
+// pages (design page-streaming 3.8), so a modified terrain renders every modifier from its first paged
+// frame. Also the level-0 rect a bake changed on the surface, for the surface pages.
 
 #include "TerrainECS/TerrainModifierSystem.h"
 #include "TerrainRowBands.h"
@@ -260,6 +260,32 @@ void TerrainModifierSystem::BakeHeightPageOverlay(TiledTerrainData& tiled, float
             tiled, std::make_shared<PageStreaming::HeightPageOverlay>(levels, bake, std::move(delta)), changed);
     }
     tiled.PageOverlayCurrent = true;
+}
+
+void TerrainModifierSystem::PublishSurfaceChanged(TiledTerrainData& tiled, bool fullBake,
+                                                  const DirtyUnion& heightDirty, const DirtyUnion& splatDirty)
+{
+    const std::optional<TileLattice> lattice = MakeTileLattice(tiled);
+    if (!lattice)
+        return;
+    std::optional<PageSampleRect> changed;
+    if (fullBake)
+        changed = PageSampleRect{0u, 0u, lattice->SamplesX - 1u, lattice->SamplesZ - 1u};
+    for (const DirtyUnion* dirty : {&heightDirty, &splatDirty})
+    {
+        if (fullBake || !dirty->Any)
+            continue;
+        const std::optional<PageSampleRect> reach =
+            LatticeRect(*lattice, dirty->MinX, dirty->MinZ, dirty->MaxX, dirty->MaxZ);
+        if (reach)
+            changed = changed ? PageStreaming::Union(*changed, *reach) : *reach;
+    }
+    if (!changed)
+        return;
+    tiled.SurfaceChanged = *changed;
+    tiled.SurfaceChangedSince = tiled.SurfaceVersion;
+    tiled.SurfaceRefresh = SurfaceRefreshReason::Edit;
+    ++tiled.SurfaceVersion;
 }
 
 } // namespace GameEngine::TerrainECS

@@ -123,7 +123,9 @@ void PackPageTableWords(const PageTable& table, const PageCacheGeometry& geometr
 struct HeightPageUpload
 {
     uint32 Slot = 0;
-    std::vector<float32> Samples; ///< kPageSampleCount, row-major, apron included
+    /// The page's bytes: kPageSampleCount float32 heights (PageStreaming::HeightSamples), row-major,
+    /// apron included.
+    std::vector<uint8> Bytes;
 };
 
 /// A terrain-UV rect whose height changed source this frame: the CBT re-evaluates the bisectors

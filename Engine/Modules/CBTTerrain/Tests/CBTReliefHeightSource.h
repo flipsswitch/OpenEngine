@@ -58,38 +58,44 @@ inline float ReliefHeightAt(float u, float v)
     return sum / norm;
 }
 
-// A dim x dim R32_FLOAT texture holding `data` (row-major, dim * dim values), ready to sample.
-inline Rendering::TextureHandle MakeR32Texture(Rendering::IDevice& device, uint32_t dim, const std::vector<float>& data,
-                                               const char* debugName)
+// Copies `data` (row-major, width * height values) into an R32_FLOAT texture in state `prior`, leaves it
+// in ShaderResource, and waits for the device.
+inline void UploadR32Texture(Rendering::IDevice& device, Rendering::TextureHandle tex, uint32_t width, uint32_t height,
+                             const std::vector<float>& data, Rendering::ResourceState prior)
+{
+    using namespace Rendering;
+    const size_t bytes = data.size() * sizeof(float);
+    const size_t rowPitch = static_cast<size_t>(width) * sizeof(float);
+    BufferHandle staging = device.CreateUploadBuffer(bytes, "CBT.Test.R32Staging");
+    device.UpdateBuffer(staging, 0, bytes, data.data());
+    auto cl = device.CreateCommandList(IDevice::QueueType::Graphics);
+    cl->Begin();
+    cl->CopyBufferToTextureSubresource(staging, tex, 0, 0, width, height, 0, rowPitch, 1, 0, 0, 0, prior);
+    cl->Barrier(ResourceBarrier::CreateTextureBarrier(tex, ResourceState::CopyDest, ResourceState::ShaderResource));
+    cl->End();
+    std::vector<CommandList*> lists{cl.get()};
+    device.ExecuteCommandLists(lists);
+    device.WaitForIdle();
+    device.DestroyBuffer(staging);
+}
+
+// A width x height R32_FLOAT texture a shader can sample, holding `data` (row-major). Empty `data` creates
+// the texture and uploads nothing.
+inline Rendering::TextureHandle MakeR32Texture(Rendering::IDevice& device, uint32_t width, uint32_t height,
+                                               const std::vector<float>& data, const char* debugName)
 {
     using namespace Rendering;
     TextureDesc td{};
-    td.width = dim;
-    td.height = dim;
+    td.width = width;
+    td.height = height;
     td.format = static_cast<uint32_t>(TextureFormat::R32_FLOAT);
     td.usage = static_cast<uint32_t>(TextureUsage::ShaderResource) |
                static_cast<uint32_t>(TextureUsage::TransferDst);
     td.persistent = true;
     td.debugName = debugName;
     TextureHandle tex = device.CreateTexture(td);
-    if (!tex.IsValid())
-        return tex;
-
-    const size_t bytes = data.size() * sizeof(float);
-    const size_t rowPitch = static_cast<size_t>(dim) * sizeof(float);
-    BufferHandle staging = device.CreateUploadBuffer(bytes, "CBT.Test.R32Staging");
-    device.UpdateBuffer(staging, 0, bytes, data.data());
-    auto cl = device.CreateCommandList(IDevice::QueueType::Graphics);
-    cl->Begin();
-    cl->CopyBufferToTextureSubresource(staging, tex, 0, 0, dim, dim, 0, rowPitch, 1, 0, 0, 0,
-                                       ResourceState::Undefined);
-    cl->Barrier(ResourceBarrier::CreateTextureBarrier(tex, ResourceState::CopyDest,
-                                                      ResourceState::ShaderResource));
-    cl->End();
-    std::vector<CommandList*> lists{cl.get()};
-    device.ExecuteCommandLists(lists);
-    device.WaitForIdle();
-    device.DestroyBuffer(staging);
+    if (tex.IsValid() && !data.empty())
+        UploadR32Texture(device, tex, width, height, data, ResourceState::Undefined);
     return tex;
 }
 
@@ -103,7 +109,7 @@ inline Rendering::TextureHandle MakeReliefHeightTexture(Rendering::IDevice& devi
             const float v = (static_cast<float>(y) + 0.5f) / static_cast<float>(dim);
             data[static_cast<size_t>(y) * dim + x] = ReliefHeightAt(u, v);
         }
-    return MakeR32Texture(device, dim, data, "CBT.Test.Relief");
+    return MakeR32Texture(device, dim, dim, data, "CBT.Test.Relief");
 }
 
 // Owns the relief texture for one arm and binds it to every ring slot, so any frame index samples
@@ -168,7 +174,7 @@ class ReliefAtlasSource
                 atlas[static_cast<size_t>(z) * dim + x] =
                     ReliefHeightAt(static_cast<float>(sx) / last, static_cast<float>(sz) / last);
             }
-        m_Texture = MakeR32Texture(device, dim, atlas, "CBT.Test.ReliefAtlas");
+        m_Texture = MakeR32Texture(device, dim, dim, atlas, "CBT.Test.ReliefAtlas");
         if (!m_Texture.IsValid())
             return;
         m_Device = &device;

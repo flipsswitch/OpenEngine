@@ -73,8 +73,11 @@ std::string ValidateHeader(const PageStoreHeader& header, uint32 levelCount)
         return "a store that holds no heights has height units or a reference radius";
     if (header.FaceCount == 0 || header.FaceCount > kPageStoreMaxFaces)
         return "face count out of range";
-    if (header.FaceMap != PageFaceMap::Flat)
+    if (header.FaceMap != PageFaceMap::Flat && header.FaceMap != PageFaceMap::EqualAngleCube)
         return "unknown face map";
+    if (header.FaceMap == PageFaceMap::EqualAngleCube &&
+        (header.FaceCount != kPageStoreMaxFaces || header.SamplesX != header.SamplesZ))
+        return "a cube store has six square faces";
     if (header.SamplesX == 0 || header.SamplesZ == 0 || header.SamplesX > kPageStoreMaxSamplesPerAxis ||
         header.SamplesZ > kPageStoreMaxSamplesPerAxis)
         return "level-0 size out of range";
@@ -120,6 +123,7 @@ std::optional<PageFieldKind> PageEncodingKind(PageFieldFormat format, PageFieldF
         {PageFieldKind::Normal, PageFieldFormat::Bc5, PageFieldFilter::NormalTent},
         {PageFieldKind::GrassControl, PageFieldFormat::Rg8, PageFieldFilter::Tent},
         {PageFieldKind::Color, PageFieldFormat::Rgba8Srgb, PageFieldFilter::PremultipliedTent},
+        {PageFieldKind::NormalSamples, PageFieldFormat::Rg8, PageFieldFilter::NormalTent},
     };
     for (const KindEncoding& encoding : kEncodings)
         if (encoding.Format == format && encoding.Filter == filter)
@@ -141,6 +145,8 @@ const char* PageFieldKindName(PageFieldKind kind)
         return "grass control";
     case PageFieldKind::Color:
         return "color";
+    case PageFieldKind::NormalSamples:
+        return "normal samples";
     }
     return "unknown";
 }

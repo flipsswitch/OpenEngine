@@ -63,6 +63,23 @@ std::string PageStoreWriter::OpenForPatch(const std::filesystem::path& existing,
     m_End = layout.TotalBytes();
     m_Layout = std::move(layout);
     m_Failed = false;
+    // A layout with more present pages has a longer index: the pages its head now covers move to
+    // the end of the store.
+    const uint64 dataOffset = m_Layout.DataOffset();
+    std::vector<uint8> bytes;
+    for (PageIndexEntry& entry : m_Layout.Entries)
+    {
+        if (entry.Offset == 0 || entry.Offset >= dataOffset)
+            continue;
+        bytes.resize(m_Layout.StoredBytes(entry));
+        if (!ReadAt(entry.Offset, bytes.data(), bytes.size()) || !WriteAt(m_End, bytes.data(), bytes.size()))
+        {
+            Abandon();
+            return "the page store could not move its pages for a larger index (is the disk full?)";
+        }
+        entry.Offset = m_End;
+        m_End += bytes.size();
+    }
     return {};
 }
 

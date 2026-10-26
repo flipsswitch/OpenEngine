@@ -620,12 +620,12 @@ void TerrainHeightPages::CollectStreamChanges(uint32 terrainKey, PagedTerrain& t
     {
         if (upload.Page.Stream != terrain.Stream)
             continue;
-        const std::vector<float32>* samples = m_Residency.Samples(terrain.Stream, upload.Page.Address);
-        if (samples == nullptr)
+        const std::vector<uint8>* bytes = m_Residency.Bytes(terrain.Stream, upload.Page.Address);
+        if (bytes == nullptr)
             continue;
-        HeightPageUpload& out = m_Uploads.emplace_back(HeightPageUpload{upload.Slot, *samples});
+        HeightPageUpload& out = m_Uploads.emplace_back(HeightPageUpload{upload.Slot, *bytes});
         if (terrain.Overlay)
-            terrain.Overlay->ApplyToPage(upload.Page.Address, out.Samples);
+            terrain.Overlay->ApplyToPage(upload.Page.Address, PageStreaming::HeightSamples(out.Bytes));
     }
 }
 

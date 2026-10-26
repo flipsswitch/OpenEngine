@@ -2787,6 +2787,8 @@ void RegisterDebugHandlers(EditorDebugServer& server,
                 result["mouseCaptured"] = app.m_Windows[0]->ui->IsMouseCaptured();
                 result["pointerLocked"] = app.m_RuntimeInput &&
                     app.m_RuntimeInput->GetPointerLockState() == Input::PointerLockState::Locked;
+                // The main window's cursor is hidden and held (a game lock or a UI value drag).
+                result["cursorLocked"] = app.m_Windows[0]->window->IsCursorLocked();
                 result["captureElementId"] = app.m_Windows[0]->ui->GetCaptureId();
             }
         }
@@ -8343,6 +8345,7 @@ void RegisterDebugHandlers(EditorDebugServer& server,
             case RG::RGCullReason::NotCulled:      return "NotCulled";
             case RG::RGCullReason::NoConsumer:     return "NoConsumer";
             case RG::RGCullReason::ProducerCulled: return "ProducerCulled";
+            case RG::RGCullReason::Overwritten:    return "Overwritten";
             case RG::RGCullReason::Cycle:           return "Cycle";
             }
             return "?";

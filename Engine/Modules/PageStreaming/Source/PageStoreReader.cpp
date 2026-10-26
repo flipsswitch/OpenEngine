@@ -64,10 +64,20 @@ bool PageStoreReader::ReadPageSamples(const PageAddress& address, std::span<uint
     return true;
 }
 
-bool PageStoreReader::ReadHeightPage(const PageAddress& address, std::span<float32> outSamples) const
+bool PageStoreReader::DecodePayload(const PageAddress& address, std::span<const uint8> stored,
+                                    std::vector<uint8>& outPayload) const
 {
-    return m_IsOpen && m_Layout.Header.Format == PageFieldFormat::HeightSteps &&
-           ReadPageSamples(address, {reinterpret_cast<uint8*>(outSamples.data()), outSamples.size_bytes()});
+    const PageIndexEntry* entry = m_IsOpen ? m_Layout.FindPresent(address) : nullptr;
+    if (!entry || stored.size() != m_Layout.StoredBytes(*entry))
+        return false;
+    if (IsBlockFormat(m_Layout.Header.Format))
+    {
+        outPayload.assign(stored.begin(), stored.end());
+        return true;
+    }
+    outPayload.resize(PagePayloadBytes(m_Layout.Header.Format));
+    m_Codec->Decode(address.Level, *entry, stored, outPayload);
+    return true;
 }
 
 } // namespace GameEngine::PageStreaming

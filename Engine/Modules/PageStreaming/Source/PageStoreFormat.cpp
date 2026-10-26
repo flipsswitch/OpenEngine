@@ -2,7 +2,14 @@
 
 #include "PageStoreSerialization.h"
 
+#include "Mathematics/CubeFaces.h"
+#include "Mathematics/Interpolation.h"
+#include "Mathematics/Vector3.h"
+
 #include <algorithm>
+#include <cassert>
+#include <cmath>
+#include <cstdint>
 
 namespace GameEngine::PageStreaming
 {
@@ -117,9 +124,14 @@ uint64 DensePageCount(std::span<const PageStoreLevel> levels)
     return levels.back().FirstEntry + static_cast<uint64>(levels.back().PagesX) * levels.back().PagesZ;
 }
 
+bool IsBlockFormat(PageFieldFormat format)
+{
+    return format == PageFieldFormat::Bc5;
+}
+
 uint32 PageStrideTexels(PageFieldFormat format)
 {
-    return format == PageFieldFormat::Bc5 ? kPageOwnedSamples + 2u * kPageBlockTexels : kPageStrideSamples;
+    return IsBlockFormat(format) ? kPageOwnedSamples + 2u * kPageBlockTexels : kPageStrideSamples;
 }
 
 uint32 PageTexelBytes(PageFieldFormat format)
@@ -137,6 +149,13 @@ uint32 PageTexelBytes(PageFieldFormat format)
     return 0u;
 }
 
+void EncodeNormalSample(const Mathematics::Vector3& normal, uint8* outTexel)
+{
+    constexpr float32 kByteMax = 255.0f;
+    outTexel[0] = static_cast<uint8>(std::lround(Math::Clamp01(normal.x * 0.5f + 0.5f) * kByteMax));
+    outTexel[1] = static_cast<uint8>(std::lround(Math::Clamp01(normal.z * 0.5f + 0.5f) * kByteMax));
+}
+
 uint32 PageStoredBytes(PageFieldFormat format, bool wide)
 {
     const uint32 stride = PageStrideTexels(format);
@@ -152,6 +171,53 @@ uint32 PageStoredBytes(PageFieldFormat format, bool wide)
         return stride * stride * PageTexelBytes(format);
     }
     return 0u;
+}
+
+uint32 PagePayloadBytes(PageFieldFormat format)
+{
+    if (IsBlockFormat(format))
+        return PageStoredBytes(format, false);
+    const uint32 stride = PageStrideTexels(format);
+    return stride * stride * PageTexelBytes(format);
+}
+
+std::span<const float32> HeightSamples(std::span<const uint8> bytes)
+{
+    assert(bytes.size() == PagePayloadBytes(PageFieldFormat::HeightSteps) &&
+           reinterpret_cast<std::uintptr_t>(bytes.data()) % alignof(float32) == 0 && "not a loaded height page");
+    return {reinterpret_cast<const float32*>(bytes.data()), kPageSampleCount};
+}
+
+std::span<float32> HeightSamples(std::vector<uint8>& bytes)
+{
+    assert(bytes.size() == PagePayloadBytes(PageFieldFormat::HeightSteps) &&
+           reinterpret_cast<std::uintptr_t>(bytes.data()) % alignof(float32) == 0 && "not a loaded height page");
+    return {reinterpret_cast<float32*>(bytes.data()), kPageSampleCount};
+}
+
+PageStoreLayout AddPresentPages(const PageStoreLayout& layout, std::span<const uint8> present)
+{
+    std::vector<uint8> merged(present.begin(), present.end());
+    std::vector<std::pair<std::size_t, PageAddress>> kept;
+    std::size_t page = 0;
+    for (uint32 face = 0; face < layout.Header.FaceCount; ++face)
+        for (std::size_t level = 0; level < layout.Levels.size(); ++level)
+            for (uint32 z = 0; z < layout.Levels[level].PagesZ; ++z)
+                for (uint32 x = 0; x < layout.Levels[level].PagesX; ++x, ++page)
+                {
+                    const PageAddress address{static_cast<uint8>(face), static_cast<uint8>(level), x, z};
+                    const std::optional<std::size_t> index = layout.PresentIndex(address);
+                    if (!index)
+                        continue;
+                    if (page < merged.size())
+                        merged[page] = 1u;
+                    kept.emplace_back(*index, address);
+                }
+    PageStoreLayout grown = MakePageStoreLayout(layout.Header, merged);
+    for (const auto& [index, address] : kept)
+        if (const std::optional<std::size_t> to = grown.PresentIndex(address))
+            grown.Entries[*to] = layout.Entries[index];
+    return grown;
 }
 
 PageStoreLayout MakePageStoreLayout(const PageStoreHeader& header, std::span<const uint8> present)
@@ -200,3 +266,110 @@ PageStoreLayout MakePageStoreLayout(const PageStoreHeader& header, std::span<con
 }
 
 } // namespace GameEngine::PageStreaming
+
+// The equal-angle functions below are a format constant: they must give the same bits on every
+// machine, so contraction is off, the deep decode's rule (CBTDeepDecode.h).
+#if defined(_MSC_VER)
+#pragma float_control(push)
+#pragma fp_contract(off)
+#elif defined(__GNUC__) && !defined(__clang__)
+#pragma GCC push_options
+#pragma GCC optimize ("fp-contract=off")
+#else
+#pragma STDC FP_CONTRACT OFF
+#endif
+
+namespace GameEngine::PageStreaming
+{
+
+namespace
+{
+
+// r(t) = R0 + R1 t + R2 t^2 + R3 t^3 of EqualAngleFaceCoordinate: the least-squares cubic, on
+// Chebyshev nodes of [0, 1], to ((4 / pi) atan(sqrt t) / sqrt t - 1) / (t - 1).
+constexpr float64 kEqualAngleR0 = -0.2731202974275542;
+constexpr float64 kEqualAngleR1 = 0.1469790459925729;
+constexpr float64 kEqualAngleR2 = -0.07874229125948942;
+constexpr float64 kEqualAngleR3 = 0.023282467736952254;
+// Newton steps of GnomonicFaceCoordinate, from a = s: a fixed count, so every machine stops alike.
+constexpr uint32 kGnomonicNewtonSteps = 8u;
+
+float64 EqualAngleRemainder(float64 t)
+{
+    return kEqualAngleR0 + t * (kEqualAngleR1 + t * (kEqualAngleR2 + t * kEqualAngleR3));
+}
+
+float64 EqualAngleRemainderSlope(float64 t)
+{
+    return kEqualAngleR1 + t * (2.0 * kEqualAngleR2 + t * 3.0 * kEqualAngleR3);
+}
+
+bool IsMinSide(PageFaceSide side)
+{
+    return side == PageFaceSide::MinZ || side == PageFaceSide::MinX;
+}
+
+} // namespace
+
+PageFaceEdge PageFaceNeighbor(uint8 face, PageFaceSide side)
+{
+    // Across the side the face's coordinate on its across axis is -1 or +1: the neighbor's normal.
+    const Mathematics::CubeFaceAxes& own = Mathematics::kCubeFaceAxes[face];
+    const bool rowSide = side == PageFaceSide::MinZ || side == PageFaceSide::MaxZ;
+    const uint8 acrossAxis = rowSide ? own.ZAxis : own.XAxis;
+    const int8 acrossSign = static_cast<int8>((rowSide ? own.ZSign : own.XSign) * (IsMinSide(side) ? -1 : 1));
+    const int8 alongSign = rowSide ? own.XSign : own.ZSign;
+    PageFaceEdge edge;
+    for (uint8 other = 0; other < kPageStoreMaxFaces; ++other)
+    {
+        const Mathematics::CubeFaceAxes& axes = Mathematics::kCubeFaceAxes[other];
+        if (axes.NormalAxis != acrossAxis || axes.NormalSign != acrossSign)
+            continue;
+        // On the neighbor this face's normal is an in-face axis, at +1 or -1 of it.
+        const bool neighborColumn = axes.XAxis == own.NormalAxis;
+        const int8 neighborSign = static_cast<int8>(own.NormalSign * (neighborColumn ? axes.XSign : axes.ZSign));
+        edge.Face = other;
+        edge.Side = neighborColumn ? (neighborSign < 0 ? PageFaceSide::MinX : PageFaceSide::MaxX)
+                                   : (neighborSign < 0 ? PageFaceSide::MinZ : PageFaceSide::MaxZ);
+        const int8 neighborAlongSign = neighborColumn ? axes.ZSign : axes.XSign;
+        edge.Reversed = alongSign != neighborAlongSign;
+    }
+    return edge;
+}
+
+float64 EqualAngleFaceCoordinate(float64 gnomonic)
+{
+    const float64 t = gnomonic * gnomonic;
+    return gnomonic + gnomonic * (t - 1.0) * EqualAngleRemainder(t);
+}
+
+float64 GnomonicFaceCoordinate(float64 equalAngle)
+{
+    // p increases (its slope is at least 0.63) and is concave on [0, 1], so Newton from a = s lands
+    // at or below the root after the first step and climbs to it: every step stays in [0, 1].
+    const float64 target = std::abs(equalAngle);
+    float64 a = target;
+    for (uint32 step = 0; step < kGnomonicNewtonSteps; ++step)
+    {
+        const float64 t = a * a;
+        const float64 slope = 1.0 + (3.0 * t - 1.0) * EqualAngleRemainder(t) + 2.0 * t * (t - 1.0) * EqualAngleRemainderSlope(t);
+        a -= (EqualAngleFaceCoordinate(a) - target) / slope;
+    }
+    if (target == 1.0)
+        a = 1.0;
+    return equalAngle < 0.0 ? -a : a;
+}
+
+float64 EqualAngleSampleCoordinate(uint32 index, uint32 samples)
+{
+    const int64 last = static_cast<int64>(samples) - 1;
+    return static_cast<float64>(2 * static_cast<int64>(index) - last) / static_cast<float64>(last);
+}
+
+} // namespace GameEngine::PageStreaming
+
+#if defined(_MSC_VER)
+#pragma float_control(pop)
+#elif defined(__GNUC__) && !defined(__clang__)
+#pragma GCC pop_options
+#endif

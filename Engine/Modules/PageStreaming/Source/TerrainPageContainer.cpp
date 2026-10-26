@@ -62,6 +62,8 @@ std::string WriteTerrainContainer(const std::filesystem::path& target, std::span
         for (const TerrainContainerField& other : fields)
             if (&other != &field && other.Kind == field.Kind)
                 return "a terrain container holds one store per field";
+        if (field.Kind == PageFieldKind::NormalSamples)
+            return "the normal samples store is a bake cache and never ships: pack the normal store";
         std::error_code ec;
         sizes.push_back(std::filesystem::file_size(field.Store, ec));
         if (ec)

@@ -566,11 +566,9 @@ TEST_F(CBTRestSettle, AContendedPoolGoesQuietAtRest)
     EXPECT_TRUE(t.Quiet) << "the tree must stop changing at rest";
 }
 
-// #4823: the screen-space edge rule, the split of every planar terrain the criterion does not decide (the
-// atlas source here, also a lattice without a pyramid and the narrow heap), comes to rest at a still camera
-// within a bounded number of updates. Its merges do not restate its split exactly (the parent's far corner
-// is extrapolated, the near field merges on the child's own edge), so a split and a merge at one threshold
-// would flip the facets whose two measures straddle it on alternate updates forever.
+// #4823: the screen-space edge rule (here the atlas source) comes to rest at a still camera within a bounded
+// number of updates. Its near-field merge measures the child's own edge, so one threshold for the split and
+// the merge would flip the facets that straddle it.
 TEST_F(CBTRestSettle, TheEdgeRuleSettlesAtRest)
 {
     Shaping edge;

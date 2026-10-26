@@ -49,6 +49,7 @@ kPackages: dict[str, dict[str, str | tuple[str, list[str]]]] = {
     "encode_srgb": {"vs": "fullscreen_noinput.vert", "fs": "encode_srgb.frag"},
     "tonemap": {"vs": "fullscreen_noinput.vert", "fs": "tonemap.frag"},
     "copy": {"vs": "fullscreen_noinput.vert", "fs": "copy.frag"},
+    "msaa_color_resolve": {"vs": "fullscreen_noinput.vert", "fs": "msaa_color_resolve.frag"},
     "clear_color_backdrop": {"vs": "fullscreen_noinput.vert", "fs": "clear_color_backdrop.frag"},
     "solidcolor": {"vs": "fullscreen_noinput.vert", "fs": "solidcolor.frag"},
     "forwardplus_lighting": {"vs": "fullscreen_noinput.vert", "fs": "forwardplus_lighting.frag"},

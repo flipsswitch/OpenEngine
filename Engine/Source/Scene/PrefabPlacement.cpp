@@ -2,18 +2,34 @@
 
 #include "Components/Hierarchy.h"
 #include "Components/PrefabInstance.h"
+#include "ECS/ComponentFieldRegistry.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
+#include "Logger/Logger.h"
+#include "Scene/PrefabLibrary.h"
+#include "Scene/SceneAssetResolver.h"
 #include "Scene/SceneSchemaRegistry.h"
 #include "Types/FlatSet.h"
+#include "Types/PathUtils.h"
 #include "Types/StringUtils.h"
 
 #include <algorithm>
+#include <cassert>
+#include <cstring>
 #include <optional>
 #include <string_view>
+#include <system_error>
 
 namespace GameEngine::Scene
 {
+
+PrefabPlacement::PrefabPlacement(ECS::World& targetWorld, const LoadOptions& loadOptions,
+                                 SceneLoadDegradation* loadDegradation)
+    : world(targetWorld), options(loadOptions), degradation(loadDegradation)
+{
+}
+
+PrefabPlacement::~PrefabPlacement() = default;
 
 static ECS::EntityHandle FindMember(const PlacedPrefab& placed, std::string_view address)
 {
@@ -89,12 +105,12 @@ static ParsedPrefab* ReadPrefab(PrefabPlacement& placement, const SceneLoadConte
     return placement.parsedByPath.InsertOrAssign(key, std::move(parsed)).get();
 }
 
-// Places the prefab the section names at `instancePath` and marks its root with the source. The
-// section's own override lines are the caller's to apply, against the caller's entity ids.
-bool PlaceInstanceSection(PrefabPlacement& placement, const SceneLoadContext& ownerCtx,
-                          const std::filesystem::path& ownerFile, const SceneDoc& ownerDoc,
-                          const SceneDoc::PrefabInstanceSection& section, const std::string& instancePath,
-                          PlacedPrefab& out, const LoadFailure& failure)
+// Places the prefab the section names at `instancePath` from its file's text and marks its root
+// with the source.
+static bool PlaceInstanceFromText(PrefabPlacement& placement, const SceneLoadContext& ownerCtx,
+                                  const std::filesystem::path& ownerFile, const SceneDoc& ownerDoc,
+                                  const SceneDoc::PrefabInstanceSection& section, const std::string& instancePath,
+                                  PlacedPrefab& out, const LoadFailure& failure)
 {
     ParsedPrefab* prefab = ReadPrefab(placement, ownerCtx, ownerFile, ownerDoc, section, failure);
     if (!prefab)
@@ -111,6 +127,12 @@ bool PlaceInstanceSection(PrefabPlacement& placement, const SceneLoadContext& ow
                                 std::to_string(section.headerLine) + ", which closes the loop.");
     }
 
+    if (placement.buildLog)
+    {
+        std::vector<std::filesystem::path>& files = placement.buildLog->files;
+        if (std::find(files.begin(), files.end(), prefab->path) == files.end())
+            files.push_back(prefab->path);
+    }
     placement.chain.push_back(prefab->path);
     const bool placed = PlacePrefab(placement, *prefab, instancePath, out, failure);
     placement.chain.pop_back();
@@ -123,6 +145,297 @@ bool PlaceInstanceSection(PrefabPlacement& placement, const SceneLoadContext& ow
         marker.Source = source.guid;
     placement.world.AddComponentImmediate(out.root, marker);
     return true;
+}
+
+static PrefabLibrary& LibraryOf(PrefabPlacement& placement)
+{
+    if (!placement.library)
+    {
+        placement.ownedLibrary = std::make_unique<PrefabLibrary>();
+        placement.library = placement.ownedLibrary.get();
+    }
+    return *placement.library;
+}
+
+// Builds the template of the prefab at `path` (which `section` names) into the library: a new
+// generation when the prefab is resident. `knownSource` is the prefab's asset GUID, or null. On
+// failure: records the failure, leaves nothing of the build in the library world, returns null.
+static const PrefabTemplate* BuildTemplate(PrefabPlacement& placement, const SceneLoadContext& ownerCtx,
+                                           const std::filesystem::path& ownerFile, const SceneDoc& ownerDoc,
+                                           const SceneDoc::PrefabInstanceSection& section,
+                                           const std::filesystem::path& path, const GUID& knownSource,
+                                           const LoadFailure& failure)
+{
+    PrefabLibrary& library = LibraryOf(placement);
+    if (!placement.templateBuild)
+    {
+        placement.templateBuild =
+            std::make_unique<PrefabPlacement>(library.GetWorld(), placement.options, nullptr);
+        placement.templateBuild->writesSceneTags = false;
+    }
+    PrefabPlacement& build = *placement.templateBuild;
+    SceneLoadDegradation rows;
+    TemplateBuildLog log;
+    build.degradation = &rows;
+    build.buildLog = &log;
+    PlacedPrefab placed;
+    const bool built = PlaceInstanceFromText(build, ownerCtx, ownerFile, ownerDoc, section, std::string(), placed,
+                                             failure);
+    build.degradation = nullptr;
+    build.buildLog = nullptr;
+
+    ECS::World& libraryWorld = library.GetWorld();
+    if (!built)
+    {
+        for (const ECS::EntityHandle h : log.entities)
+        {
+            if (libraryWorld.IsValid(h))
+                libraryWorld.DestroyEntityImmediate(h);
+        }
+        return nullptr;
+    }
+
+    PrefabTemplate prefab;
+    prefab.Path = path;
+    if (const auto* marker = libraryWorld.GetComponent<Components::PrefabInstance>(placed.root))
+    {
+        prefab.Source = knownSource.IsNull() ? marker->Source : knownSource;
+        Components::PrefabInstance known = *marker;
+        known.Source = prefab.Source;
+        libraryWorld.AddComponentImmediate(placed.root, known);
+    }
+    prefab.Entities.reserve(placed.members.size());
+    prefab.Addresses.reserve(placed.members.size());
+    prefab.Origins.reserve(placed.members.size());
+    for (auto& [address, h] : placed.members)
+    {
+        const auto created = std::find(log.entities.begin(), log.entities.end(), h);
+        assert(created != log.entities.end() && "Every template entity is created by its build");
+        prefab.Addresses.push_back(std::move(address));
+        prefab.Entities.push_back(h);
+        prefab.Origins.push_back(log.origins[static_cast<std::size_t>(created - log.entities.begin())]);
+    }
+    for (SceneLoadSkip& skip : rows.skips)
+    {
+        const auto it = std::find(prefab.Entities.begin(), prefab.Entities.end(), skip.entityHandle);
+        const std::int32_t index =
+            it == prefab.Entities.end() ? -1 : static_cast<std::int32_t>(it - prefab.Entities.begin());
+        prefab.Rows.push_back(PrefabTemplate::Row{std::move(skip), index});
+    }
+    prefab.Files = std::move(log.files);
+    const auto* nameSchema = SceneSchemaRegistry::Find("Name");
+    prefab.RootTakesFallbackName = nameSchema && !nameSchema->IsPresent(libraryWorld, placed.root);
+    return &library.Insert(std::move(prefab));
+}
+
+// The template of the prefab `section` places: the resident one, or one built from the prefab's
+// text the first time the library meets it.
+static const PrefabTemplate* ResolveTemplate(PrefabPlacement& placement, const SceneLoadContext& ownerCtx,
+                                             const std::filesystem::path& ownerFile, const SceneDoc& ownerDoc,
+                                             const SceneDoc::PrefabInstanceSection& section,
+                                             const LoadFailure& failure)
+{
+    const SceneDoc::Resource& resource = ownerDoc.resources.at(section.sourceResourceId);
+    const std::filesystem::path path = ResolveResourcePath(ownerCtx, ownerFile, resource).lexically_normal();
+    if (const PrefabTemplate* resident = LibraryOf(placement).FindByPath(path))
+        return resident;
+    return BuildTemplate(placement, ownerCtx, ownerFile, ownerDoc, section, path, GUID::Null(), failure);
+}
+
+std::string PathAsSpelledOnDisk(const std::filesystem::path& file, const std::filesystem::path& assetRoot)
+{
+    std::error_code error;
+    const std::filesystem::path onDisk = std::filesystem::canonical(file, error);
+    const std::filesystem::path shown = error ? file : onDisk;
+    const std::filesystem::path root = std::filesystem::canonical(assetRoot, error);
+    const std::filesystem::path relative = error ? std::filesystem::path{} : RelativePathUnderRoot(shown, root);
+    return (relative.empty() ? shown : relative).generic_string();
+}
+
+const PrefabTemplate* BuildTemplateFromFile(PrefabLibrary& library, const std::filesystem::path& path,
+                                            const GUID& source, const LoadOptions& options, std::string& error)
+{
+    SceneDoc ownerDoc;
+    SceneDoc::Resource resource;
+    resource.id = "prefab";
+    resource.path = path.generic_string();
+    ownerDoc.resources.emplace(resource.id, resource);
+    SceneDoc::PrefabInstanceSection section;
+    section.id = path.stem().string();
+    section.sourceResourceId = resource.id;
+
+    PrefabPlacement placement{library.GetWorld(), options, nullptr};
+    placement.usesLibrary = true;
+    placement.library = &library;
+    const SceneLoadContext ownerCtx = MakeDocumentLoadContext(library.GetWorld(), path, ownerDoc, options);
+    std::string message;
+    std::filesystem::path file;
+    int line = 0;
+    const LoadFailure failure{&message, &file, &line};
+    const PrefabTemplate* built = BuildTemplate(placement, ownerCtx, path, ownerDoc, section, path, source, failure);
+    if (!built)
+    {
+        const std::filesystem::path assetRoot =
+            options.assetRootOverride.empty() && options.assetResolver ? options.assetResolver->GetAssetRoot()
+                                                                       : options.assetRootOverride;
+        error = PathAsSpelledOnDisk(file.empty() ? path : file, assetRoot) + ":" + std::to_string(line) + ": " + message;
+    }
+    return built;
+}
+
+namespace
+{
+// A GUID that a PrefabRef field holds: the component type and the GUID's byte offset in it.
+struct PrefabRefField
+{
+    ECS::ComponentTypeId TypeId = 0;
+    std::uint32_t Offset = 0;
+};
+} // namespace
+
+// Every PrefabRef GUID in the reflected fields of the component types that a scene saves.
+static std::vector<PrefabRefField> CollectPrefabRefFields()
+{
+    std::vector<PrefabRefField> fields;
+    for (const ECS::ComponentTypeId typeId : SceneSchemaRegistry::GetSavedComponentTypes())
+    {
+        for (const ECS::FieldInfo& field : ECS::ComponentFieldRegistry::Get(typeId))
+        {
+            if (field.Type != ECS::FieldTypeId::AssetGuid ||
+                field.AssetCategory != static_cast<std::uint16_t>(AssetType::Prefab))
+                continue;
+            for (std::uint32_t offset = 0; offset + GUID::kSize <= field.Size; offset += GUID::kSize)
+                fields.push_back({typeId, field.Offset + offset});
+        }
+    }
+    return fields;
+}
+
+// Appends to `out` every non-null prefab GUID a PrefabRef field of `entities` in `world` holds.
+static void CollectPrefabRefs(const ECS::World& world, std::span<const ECS::EntityHandle> entities,
+                              std::span<const PrefabRefField> fields,
+                              std::vector<GUID>& out)
+{
+    std::vector<std::uint8_t> bytes;
+    for (const auto& [typeId, offset] : fields)
+    {
+        for (const ECS::EntityHandle entity : entities)
+        {
+            if (!world.HasComponent(entity, typeId) || !world.CaptureComponentBytes(entity, typeId, bytes) ||
+                offset + GUID::kSize > bytes.size())
+                continue;
+            std::uint8_t raw[GUID::kSize];
+            std::memcpy(raw, bytes.data() + offset, GUID::kSize);
+            const GUID guid = GUID::FromBytes(raw);
+            if (!guid.IsNull() && std::find(out.begin(), out.end(), guid) == out.end())
+                out.push_back(guid);
+        }
+    }
+}
+
+void HoldReferencedPrefabs(PrefabPlacement& placement, std::span<const ECS::EntityHandle> entities)
+{
+    const auto fields = CollectPrefabRefFields();
+    if (fields.empty())
+        return;
+    PrefabLibrary& library = LibraryOf(placement);
+    std::vector<GUID> pending;
+    CollectPrefabRefs(placement.world, entities, fields, pending);
+    for (std::size_t next = 0; next < pending.size(); ++next)
+    {
+        const GUID source = pending[next];
+        const PrefabTemplate* prefab = library.FindByGuid(source);
+        if (!prefab)
+        {
+            std::filesystem::path path;
+            AssetType type = AssetType::Unknown;
+            ISceneAssetResolver* resolver = placement.options.assetResolver;
+            if (!resolver || !resolver->TryGetPathAndType(resolver->ResolveGuid(source), path, type))
+            {
+                Logger::Log::Error("Scene: a PrefabRef names the asset {}, which the project does not have. Assign "
+                                   "an existing prefab to the field.",
+                                   source.ToString());
+                continue;
+            }
+            std::string error;
+            prefab = BuildTemplateFromFile(library, path.lexically_normal(), source, placement.options, error);
+            if (!prefab)
+            {
+                Logger::Log::Error("Scene: a PrefabRef names a prefab that could not be loaded: {}", error);
+                continue;
+            }
+            CollectPrefabRefs(library.GetWorld(), prefab->Entities, fields, pending);
+        }
+        library.Hold(placement.world, *prefab);
+    }
+}
+
+// Places the instance `section` at `instancePath` as a batch clone of its prefab's template, with
+// scene identities from the addresses and the root marked with its source (and named after the
+// instance when the prefab gives no name). Records the template's load-report rows again.
+static bool PlaceInstanceFromLibrary(PrefabPlacement& placement, const SceneLoadContext& ownerCtx,
+                                     const std::filesystem::path& ownerFile, const SceneDoc& ownerDoc,
+                                     const SceneDoc::PrefabInstanceSection& section, const std::string& instancePath,
+                                     PlacedPrefab& out, const LoadFailure& failure)
+{
+    const PrefabTemplate* prefab = ResolveTemplate(placement, ownerCtx, ownerFile, ownerDoc, section, failure);
+    if (!prefab)
+        return false;
+
+    ECS::World& world = placement.world;
+    placement.library->Hold(world, *prefab);
+    if (!world.CreateBatchFromWorld(placement.library->GetWorld(), prefab->Plan, placement.remap))
+        return failure.Fail(ownerFile, section.headerLine,
+                            "The prefab instance \"" + section.id + "\" could not be copied from its prefab. Reload "
+                            "the scene; if it persists, re-save the prefab.");
+    const std::span<const ECS::EntityHandle> targets = placement.remap.GetTargets();
+    out.root = targets.front();
+    out.members.clear();
+    out.members.reserve(targets.size());
+    for (std::size_t i = 0; i < targets.size(); ++i)
+    {
+        const std::string& address = prefab->Addresses[i];
+        const std::string path = JoinPath(instancePath, address);
+        const std::string tag = SceneTagForPath(path);
+        const PrefabTemplate::Origin& origin = prefab->Origins[i];
+        if (!ClaimHashedTag(placement, tag, path, prefab->Files[origin.File], origin.Line, failure))
+            return false;
+        world.AddComponentImmediate(targets[i], MakeTag(tag));
+        out.members.emplace_back(address, targets[i]);
+    }
+    if (prefab->RootTakesFallbackName)
+        ApplyFallbackName(world, ownerCtx, out.root, LastIdOf(instancePath), instancePath);
+
+    Components::PrefabInstance marker{};
+    AssetReference source;
+    if (TryResolveResourceIdToAssetReference(ownerCtx, section.sourceResourceId, source, nullptr))
+        marker.Source = source.guid;
+    world.AddComponentImmediate(out.root, marker);
+
+    if (placement.degradation)
+    {
+        for (const PrefabTemplate::Row& row : prefab->Rows)
+        {
+            SceneLoadSkip skip = row.Skip;
+            skip.entityId = JoinPath(instancePath, skip.entityId);
+            skip.entityHandle = row.EntityIndex >= 0 ? targets[static_cast<std::size_t>(row.EntityIndex)]
+                                                     : ECS::EntityHandle{};
+            placement.degradation->skips.push_back(std::move(skip));
+        }
+    }
+    return true;
+}
+
+// Places the prefab the section names at `instancePath` and marks its root with the source. The
+// section's own override lines are the caller's to apply, against the caller's entity ids.
+bool PlaceInstanceSection(PrefabPlacement& placement, const SceneLoadContext& ownerCtx,
+                          const std::filesystem::path& ownerFile, const SceneDoc& ownerDoc,
+                          const SceneDoc::PrefabInstanceSection& section, const std::string& instancePath,
+                          PlacedPrefab& out, const LoadFailure& failure)
+{
+    if (placement.usesLibrary)
+        return PlaceInstanceFromLibrary(placement, ownerCtx, ownerFile, ownerDoc, section, instancePath, out, failure);
+    return PlaceInstanceFromText(placement, ownerCtx, ownerFile, ownerDoc, section, instancePath, out, failure);
 }
 
 // The load-report row for an override line whose address names no entity of the prefab: an
@@ -403,11 +716,20 @@ static bool PlacePrefab(PrefabPlacement& placement, ParsedPrefab& prefab, const 
         const ECS::EntityHandle h = world.CreateEntity();
         if (!h.IsValid())
             return failure.Fail(prefab.path, e.headerLine, "Failed to create entity");
+        if (TemplateBuildLog* log = placement.buildLog)
+        {
+            const auto file = std::find(log->files.begin(), log->files.end(), prefab.path);
+            log->entities.push_back(h);
+            log->origins.push_back({static_cast<std::uint32_t>(file - log->files.begin()), e.headerLine});
+        }
         std::string path = JoinPath(instancePath, address);
         const std::string tag = SceneTagForPath(path);
-        if (!ClaimHashedTag(placement, tag, path, prefab.path, e.headerLine, failure))
-            return false;
-        world.AddComponentImmediate(h, MakeTag(tag));
+        if (placement.writesSceneTags)
+        {
+            if (!ClaimHashedTag(placement, tag, path, prefab.path, e.headerLine, failure))
+                return false;
+            world.AddComponentImmediate(h, MakeTag(tag));
+        }
         if (address.empty())
             out.root = h;
         out.members.emplace_back(std::move(address), h);

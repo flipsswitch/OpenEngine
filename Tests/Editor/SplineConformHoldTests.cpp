@@ -9,8 +9,9 @@
 #include "Components/Spline/SplineExtrude.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Picking/EditorPickProviders.h"
-#include "Placement/SplineExtrudeController.h"
-#include "Placement/SplineSurfaceConform.h"
+#include "SplineRecipes/RecipeBuildStates.h"
+#include "SplineRecipes/SplineExtrudeController.h"
+#include "SplineRecipes/SplineSurfaceConform.h"
 #include "SharedHeadlessDevice.h"
 #include "SplineECS/SplineService.h"
 
@@ -19,10 +20,10 @@
 #include <gtest/gtest.h>
 
 using namespace PendingBvhGrid;
-using GameEngine::Editor::ConformHold;
-using GameEngine::Editor::ConformMissTally;
-using GameEngine::Editor::ConformRayDown;
-using GameEngine::Editor::HoldForPendingBvh;
+using GameEngine::SplineRecipes::ConformHold;
+using GameEngine::SplineRecipes::ConformMissTally;
+using GameEngine::SplineRecipes::ConformRayDown;
+using GameEngine::SplineRecipes::HoldForPendingBvh;
 
 namespace
 {
@@ -117,19 +118,19 @@ class SplineConformHoldTests : public PendingBvhGridTest
 TEST_F(SplineConformHoldTests, AConformOverAMeshWithAPendingBvhHoldsAndLandsWhenItIsPublished)
 {
     const Vector3 sample(3.1f, 0.0f, -2.7f);
-    ConformMissTally whilePending;
+    GameEngine::SplineRecipes::ConformMissTally whilePending;
     Vector3 hit;
-    EXPECT_FALSE(ConformRayDown(m_World, sample, {}, hit, nullptr, &whilePending))
+    EXPECT_FALSE(GameEngine::SplineRecipes::ConformRayDown(m_World, sample, {}, hit, nullptr, &whilePending))
         << "the conform waited for the BVH or landed on the mesh's box";
     EXPECT_EQ(whilePending.PendingBvh, 1u);
     EXPECT_EQ(whilePending.Misses, 0u) << "a pending mesh was reported as no ground";
-    ConformHold hold;
+    GameEngine::SplineRecipes::ConformHold hold;
     EXPECT_TRUE(HoldForPendingBvh(whilePending, 7u, hold));
     EXPECT_TRUE(hold.Held);
 
     ASSERT_NE(MeshBvhCache::Instance().GetOrBuild(m_Guid, 0, Grid()), nullptr);
-    ConformMissTally published;
-    ASSERT_TRUE(ConformRayDown(m_World, sample, {}, hit, nullptr, &published));
+    GameEngine::SplineRecipes::ConformMissTally published;
+    ASSERT_TRUE(GameEngine::SplineRecipes::ConformRayDown(m_World, sample, {}, hit, nullptr, &published));
     EXPECT_NEAR(hit.y, SurfaceHeight(sample.x, sample.z), 0.01f);
     EXPECT_EQ(published.PendingBvh, 0u);
     EXPECT_FALSE(HoldForPendingBvh(published, 7u, hold));
@@ -148,7 +149,7 @@ TEST_F(SplineConformHoldTests, AConformOverAPickProviderEntityGivesNoHit)
     Picking::EditorPickProviderRegistry::Get().Register(kConformTestProviderType, std::move(provider));
 
     Vector3 hit;
-    EXPECT_FALSE(ConformRayDown(m_World, Vector3(101.0f, 0.0f, 1.0f), {}, hit))
+    EXPECT_FALSE(GameEngine::SplineRecipes::ConformRayDown(m_World, Vector3(101.0f, 0.0f, 1.0f), {}, hit))
         << "the conform landed on an editor pick provider's mesh, which a Player has no provider for";
 }
 
@@ -160,7 +161,7 @@ TEST_F(SplineConformHoldTests, AConformOverARendererWithNoCpuMeshGivesNoHit)
     m_World.AddComponentImmediate(runtime, renderer);
 
     Vector3 hit;
-    EXPECT_FALSE(ConformRayDown(m_World, Vector3(-99.0f, 0.0f, 1.0f), {}, hit))
+    EXPECT_FALSE(GameEngine::SplineRecipes::ConformRayDown(m_World, Vector3(-99.0f, 0.0f, 1.0f), {}, hit))
         << "the conform landed on the top of a renderer's box";
 }
 
@@ -175,14 +176,15 @@ TEST_F(SplineConformHoldTests, AnExtrudeHeldByAPendingBvhBuildsOnTheUpdateAfterI
     GameEngine::Engine::Renderer::RenderServices renderServices;
     ASSERT_TRUE(renderServices.Initialize(device));
     CreateExtrudeAcrossTheGrid();
-    GameEngine::Editor::SplineExtrudeController controller;
+    GameEngine::SplineRecipes::SplineExtrudeController controller;
+    GameEngine::SplineRecipes::RecipeBuildStates states;
 
-    controller.Update(m_World, &renderServices, 0.0f);
+    controller.Update(m_World, renderServices, 0.0f, states);
     m_World.ProcessCommands();
     EXPECT_EQ(CountGeneratedChunks(), 0u) << "the held rebuild built pieces over the pending mesh";
 
     ASSERT_NE(MeshBvhCache::Instance().GetOrBuild(m_Guid, 0, Grid()), nullptr);
-    controller.Update(m_World, &renderServices, 0.0f);
+    controller.Update(m_World, renderServices, 0.0f, states);
     m_World.ProcessCommands();
     EXPECT_GT(CountGeneratedChunks(), 0u) << "the held recipe never built once the BVH was published";
 

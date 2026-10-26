@@ -32,11 +32,9 @@ public:
     /// be written before Finish; pages go into the file in the order they are written. Returns an empty string, else the reason.
     std::string Create(const std::filesystem::path& target, PageStoreLayout layout);
 
-    /// Starts rewriting the store at `existing`, whose validated layout is `layout`, as `target`
-    /// under the key in `layout.Header`: the existing file becomes the temporary file (a rename,
-    /// no copy), and every page not written keeps its bytes and entry. For an incremental cook,
-    /// whose unchanged pages cost no write; the previous store holds an earlier state of the same
-    /// source, so a patch that is abandoned discards it. Returns an empty string, else the reason.
+    /// Rewrites the store at `existing` (validated layout `layout`) as `target` under the key in `layout.Header`,
+    /// by rename, not copy: a page not written keeps its bytes. Pages that `layout` adds (AddPresentPages) are
+    /// written before Finish. Abandon discards the store. Returns an empty string, else the reason.
     std::string OpenForPatch(const std::filesystem::path& existing, const std::filesystem::path& target,
                              PageStoreLayout layout);
 

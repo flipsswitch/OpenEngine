@@ -53,14 +53,15 @@ int32 SixteenBitStepExponent(float32 range)
     return exponent;
 }
 
-HeightStepPlanner::HeightStepPlanner(uint32 samplesX, uint32 samplesZ)
+HeightStepPlanner::HeightStepPlanner(uint32 samplesX, uint32 samplesZ, uint32 faces)
     : m_Levels(BuildPageStoreLevels(samplesX, samplesZ))
+    , m_Faces(faces)
 {
     if (m_Levels.empty())
         return;
-    const std::size_t pages = static_cast<std::size_t>(m_Levels[0].PagesX) * m_Levels[0].PagesZ;
-    m_PageMin.assign(pages, std::numeric_limits<float32>::max());
-    m_PageMax.assign(pages, std::numeric_limits<float32>::lowest());
+    m_FacePages = static_cast<std::size_t>(m_Levels[0].PagesX) * m_Levels[0].PagesZ;
+    m_PageMin.assign(m_FacePages * faces, std::numeric_limits<float32>::max());
+    m_PageMax.assign(m_FacePages * faces, std::numeric_limits<float32>::lowest());
 }
 
 void HeightStepPlanner::Push(std::span<const float32> samples)
@@ -68,7 +69,7 @@ void HeightStepPlanner::Push(std::span<const float32> samples)
     if (m_Levels.empty())
         return;
     const uint32 width = m_Levels[0].SamplesX;
-    while (!samples.empty() && m_Z < m_Levels[0].SamplesZ)
+    while (!samples.empty() && m_Face < m_Faces)
     {
         const uint32 span = static_cast<uint32>(std::min<std::size_t>(samples.size(), width - m_X));
         PushRowSpan(samples.first(span), m_X);
@@ -78,6 +79,11 @@ void HeightStepPlanner::Push(std::span<const float32> samples)
         {
             m_X = 0;
             ++m_Z;
+        }
+        if (m_Z == m_Levels[0].SamplesZ)
+        {
+            m_Z = 0;
+            ++m_Face;
         }
     }
 }
@@ -110,7 +116,7 @@ void HeightStepPlanner::PushRowSpan(std::span<const float32> samples, uint32 fir
         m_Magnitude = std::max({m_Magnitude, std::abs(lowest), std::abs(highest)});
         for (uint32 pageRow = sharedRow ? rowPage - 1u : rowPage; pageRow <= rowPage; ++pageRow)
         {
-            const std::size_t index = static_cast<std::size_t>(pageRow) * level.PagesX + page;
+            const std::size_t index = m_Face * m_FacePages + static_cast<std::size_t>(pageRow) * level.PagesX + page;
             m_PageMin[index] = std::min(m_PageMin[index], lowest);
             m_PageMax[index] = std::max(m_PageMax[index], highest);
         }
@@ -132,20 +138,23 @@ std::array<int8, kPageStoreMaxLevels> HeightStepPlanner::StepExponents() const
             // A coarser page's level-0 footprint is its four finer pages', clamped to the finer
             // level as PagePyramidBuilder clamps it.
             const PageStoreLevel& finer = m_Levels[levelIndex - 1u];
-            std::vector<float32> coarseMin(static_cast<std::size_t>(level.PagesX) * level.PagesZ,
-                                           std::numeric_limits<float32>::max());
+            const std::size_t facePages = static_cast<std::size_t>(level.PagesX) * level.PagesZ;
+            const std::size_t finerFacePages = static_cast<std::size_t>(finer.PagesX) * finer.PagesZ;
+            std::vector<float32> coarseMin(facePages * m_Faces, std::numeric_limits<float32>::max());
             std::vector<float32> coarseMax(coarseMin.size(), std::numeric_limits<float32>::lowest());
-            for (uint32 z = 0; z < level.PagesZ; ++z)
-                for (uint32 x = 0; x < level.PagesX; ++x)
-                    for (uint32 d = 0; d < 4u; ++d)
-                    {
-                        const uint32 childX = std::min(2u * x + (d & 1u), finer.PagesX - 1u);
-                        const uint32 childZ = std::min(2u * z + (d >> 1u), finer.PagesZ - 1u);
-                        const std::size_t child = static_cast<std::size_t>(childZ) * finer.PagesX + childX;
-                        const std::size_t page = static_cast<std::size_t>(z) * level.PagesX + x;
-                        coarseMin[page] = std::min(coarseMin[page], lowest[child]);
-                        coarseMax[page] = std::max(coarseMax[page], highest[child]);
-                    }
+            for (uint32 face = 0; face < m_Faces; ++face)
+                for (uint32 z = 0; z < level.PagesZ; ++z)
+                    for (uint32 x = 0; x < level.PagesX; ++x)
+                        for (uint32 d = 0; d < 4u; ++d)
+                        {
+                            const uint32 childX = std::min(2u * x + (d & 1u), finer.PagesX - 1u);
+                            const uint32 childZ = std::min(2u * z + (d >> 1u), finer.PagesZ - 1u);
+                            const std::size_t child =
+                                face * finerFacePages + static_cast<std::size_t>(childZ) * finer.PagesX + childX;
+                            const std::size_t page = face * facePages + static_cast<std::size_t>(z) * level.PagesX + x;
+                            coarseMin[page] = std::min(coarseMin[page], lowest[child]);
+                            coarseMax[page] = std::max(coarseMax[page], highest[child]);
+                        }
             lowest = std::move(coarseMin);
             highest = std::move(coarseMax);
         }

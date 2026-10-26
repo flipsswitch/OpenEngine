@@ -20,9 +20,10 @@
 #include "UI/Controls/Dropdown.h"
 #include "UI/Controls/EnumField.h"
 #include "UI/Controls/FloatField.h"
+#include "UI/Controls/InspectorNotice.h"
 #include "UI/Controls/IntField.h"
-#include "UI/Controls/MaskField.h"
 #include "UI/Controls/Label.h"
+#include "UI/Controls/MaskField.h"
 #include "UI/Controls/TextArea.h"
 #include "UI/Controls/TextField.h"
 #include "UI/Controls/Toggle.h"
@@ -407,12 +408,25 @@ inline void AddSourceFileRow(UIElement* parent, const std::filesystem::path& sou
 
 // Explanatory copy in the panel's info-card treatment. A card reads as a note ABOUT the rows near
 // it, which is what this kind of text is; loose text reads as one more row and competes with the
-// controls it explains. Use AddLine for a plain line and EditorUI::InspectorNotice for a problem.
+// controls it explains. Use AddLine for a plain line and AddNotice for a state or a problem.
 inline void AddInfoCard(UIElement* parent, const std::string& text)
 {
     if (!parent)
         return;
     parent->AddChild(std::make_unique<EditorUI::CollapsibleInfoCard>(text));
+}
+
+// A notice of `kind` with `text`: a state or a problem of the inspected object. Returns the
+// notice, or null when `parent` is null.
+inline EditorUI::InspectorNotice* AddNotice(UIElement* parent, const std::string& text,
+                                            EditorUI::InspectorNotice::Kind kind)
+{
+    if (!parent)
+        return nullptr;
+    auto notice = std::make_unique<EditorUI::InspectorNotice>(text, kind);
+    EditorUI::InspectorNotice* result = notice.get();
+    parent->AddChild(std::move(notice));
+    return result;
 }
 
 inline const char* BoolToString(bool v) { return v ? "true" : "false"; }

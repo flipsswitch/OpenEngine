@@ -623,7 +623,7 @@ TEST_F(CBTScreenSpaceTest, AtlasResolveSamplesAtlasNotUnifiedHeight)
             tile[z * kTileRes + x] = 0.10f + 0.08f * static_cast<float>(x) + 0.02f * static_cast<float>(z);
 
     const std::vector<float> atlasData = PackSingleSlot(kTileRes, tile);
-    TextureHandle atlasTex = MakeR32Texture(*m_Device, kDim, atlasData, "CBT.Test.Atlas");
+    TextureHandle atlasTex = MakeR32Texture(*m_Device, kDim, kDim, atlasData, "CBT.Test.Atlas");
     TextureHandle unifiedTex = MakeConstantHeightTexture(*m_Device, kUnifiedConst);
     ASSERT_TRUE(atlasTex.IsValid() && unifiedTex.IsValid());
 
@@ -699,7 +699,7 @@ TEST_F(CBTScreenSpaceTest, AtlasNonResidentTileReadsCoarseField)
     // A non-zero atlas so "read the coarse field" is distinguishable from "read a resident slot".
     std::vector<float> tile(kTileRes * kTileRes, 0.95f);
     const std::vector<float> atlasData = PackSingleSlot(kTileRes, tile);
-    TextureHandle atlasTex = MakeR32Texture(*m_Device, kDim, atlasData, "CBT.Test.Atlas");
+    TextureHandle atlasTex = MakeR32Texture(*m_Device, kDim, kDim, atlasData, "CBT.Test.Atlas");
 
     // Coarse field: a ramp in u. Corner UVs are grid points (0 or 1) -> coarse texel 0 or dim-1
     // (the sample is endpoint-exact), so corners at u=0 read 0.2 and at u=1 read 0.7 — distinct.
@@ -708,7 +708,7 @@ TEST_F(CBTScreenSpaceTest, AtlasNonResidentTileReadsCoarseField)
     for (uint32_t z = 0; z < kCoarseDim; ++z)
         for (uint32_t x = 0; x < kCoarseDim; ++x)
             coarse[static_cast<size_t>(z) * kCoarseDim + x] = coarseVal(x);
-    TextureHandle coarseTex = MakeR32Texture(*m_Device, kCoarseDim, coarse, "CBT.Test.CoarseField");
+    TextureHandle coarseTex = MakeR32Texture(*m_Device, kCoarseDim, kCoarseDim, coarse, "CBT.Test.CoarseField");
     ASSERT_TRUE(atlasTex.IsValid() && coarseTex.IsValid());
 
     instance.SetAtlasSource(0u, atlasTex);
@@ -814,7 +814,7 @@ TEST_F(CBTScreenSpaceTest, AtlasResolve2x2DistinctSlotsCatchColRowSwap)
     std::vector<float> atlas(static_cast<size_t>(kAtlasDim) * kAtlasDim, 0.0f);
     for (uint32_t s = 0; s < 4u; ++s)
         PackSlotInto(atlas, kAtlasDim, kSlotStride, kSlotsPerRow, s, kTileRes, tileFor(s));
-    TextureHandle atlasTex = MakeR32Texture(*m_Device, kAtlasDim, atlas, "CBT.Test.Atlas");
+    TextureHandle atlasTex = MakeR32Texture(*m_Device, kAtlasDim, kAtlasDim, atlas, "CBT.Test.Atlas");
     ASSERT_TRUE(atlasTex.IsValid());
     instance.SetAtlasSource(0u, atlasTex);
 
@@ -967,7 +967,7 @@ TEST_F(CBTScreenSpaceTest, RefinedCornersMatchTheCpuHeightfieldOnTheHeightTextur
 
     const GameEngine::Terrain::HeightfieldData field = MakeCliffAndSlopeHeightfield();
     const std::vector<float> samples(field.GetRawSamples(), field.GetRawSamples() + field.GetSampleCount());
-    TextureHandle height = MakeR32Texture(*m_Device, kLatticeDim, samples, "CBT.Test.Height");
+    TextureHandle height = MakeR32Texture(*m_Device, kLatticeDim, kLatticeDim, samples, "CBT.Test.Height");
     ASSERT_TRUE(height.IsValid());
     for (uint32_t s = 0; s < kCBTFrameParamsRing; ++s)
         instance.SetHeightSource(s, height);
@@ -992,7 +992,7 @@ TEST_F(CBTScreenSpaceTest, RefinedCornersMatchTheCpuHeightfieldOnTheAtlas)
     const GameEngine::Terrain::HeightfieldData field = MakeCliffAndSlopeHeightfield();
     const std::vector<float> samples(field.GetRawSamples(), field.GetRawSamples() + field.GetSampleCount());
     constexpr uint32_t kSlotDim = kLatticeDim + 2u; // one-texel apron on each side
-    TextureHandle atlasTex = MakeR32Texture(*m_Device, kSlotDim, PackSingleSlot(kLatticeDim, samples), "CBT.Test.Atlas");
+    TextureHandle atlasTex = MakeR32Texture(*m_Device, kSlotDim, kSlotDim, PackSingleSlot(kLatticeDim, samples), "CBT.Test.Atlas");
     ASSERT_TRUE(atlasTex.IsValid());
     const std::vector<uint8_t> row = MakeRow(/*slot*/ 0u, /*gen*/ 1u);
     for (uint32_t s = 0; s < kCBTFrameParamsRing; ++s)
@@ -1156,7 +1156,7 @@ TEST_F(CBTScreenSpaceTest, PagedResolveReadsThisFramesPageTableAndCache)
     ASSERT_TRUE(instance.Initialize(*m_Device, m_KernelSet));
     ASSERT_TRUE(instance.InitializeRoots());
 
-    TextureHandle cacheTex = MakeR32Texture(*m_Device, kPagedCacheDim, MakePagedCache(), "CBT.Test.PagedCache");
+    TextureHandle cacheTex = MakeR32Texture(*m_Device, kPagedCacheDim, kPagedCacheDim, MakePagedCache(), "CBT.Test.PagedCache");
     ASSERT_TRUE(cacheTex.IsValid());
 
     ExpectEachFrameResolvesItsOwnPageTable(*m_Device, instance, cacheTex);

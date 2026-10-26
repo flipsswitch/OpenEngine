@@ -8667,6 +8667,39 @@ TEST(SceneIO, TwoInstancesOfOnePrefabGiveDistinctTags)
     EXPECT_NE(a.id, b.id);
 }
 
+// A component no module registers, authored inside a prefab, is kept on every placed instance with
+// its fields, so a save of the scene and a later build that registers the type both still see it.
+TEST(SceneIO, AnUnknownComponentInAPrefabIsKeptOnEveryInstance)
+{
+    ECS::World world;
+    ASSERT_EQ(LoadPrefabSceneError({{"unknown_component.prefab", "[prefab version=1]\n"
+                                                                 "[entity id=\"root\"]\n"
+                                                                 "[entity id=\"spring\" parent=\"root\"]\n"
+                                                                 "Jumpable.height = 2.5\n"
+                                                                 "Jumpable.charge = \"full\"\n"}},
+                                   "unknown_component.scene",
+                                   "[scene name=\"S\" version=1]\n"
+                                   "[resource id=\"p\" path=\"unknown_component.prefab\"]\n"
+                                   "[prefab id=\"a\" source=\"p\"]\n"
+                                   "[prefab id=\"b\" source=\"p\"]\n",
+                                   world),
+              "");
+    const ECS::UnresolvedComponentStore* store = world.TryGetUnresolvedComponents();
+    ASSERT_NE(store, nullptr);
+    for (const char* tag : {"a.spring", "b.spring"})
+    {
+        const ECS::EntityHandle spring = FindByTag(world, tag);
+        ASSERT_TRUE(spring.IsValid()) << tag;
+        const auto components = store->Map().find(spring);
+        ASSERT_NE(components, store->Map().end()) << tag;
+        ASSERT_EQ(components->second.size(), 1u) << tag;
+        EXPECT_EQ(components->second[0].Name, "Jumpable") << tag;
+        ASSERT_EQ(components->second[0].Props.size(), 2u) << tag;
+        EXPECT_EQ(components->second[0].Props[0], (std::pair<std::string, std::string>{"height", "2.5"})) << tag;
+        EXPECT_EQ(components->second[0].Props[1], (std::pair<std::string, std::string>{"charge", "\"full\""})) << tag;
+    }
+}
+
 // An entity whose path is longer than the tag holds gets the hashed scene identity ending in its
 // own id; an override on it saves at the address its parent chain gives and survives a load.
 TEST(SceneIO, OverrideAtASeventyCharacterPathRoundTripsWithAHashedTag)
@@ -8783,7 +8816,9 @@ TEST(SceneIO, TwoPathsWithOneHashedTagAreRefused)
         world);
     EXPECT_NE(error.find("\"" + pathA + "\" and \"" + pathB + "\". Shorten an id in one of the chains."),
               std::string::npos)
-        << error;
+        << error;    // The entity that takes the identity second, where it is authored.
+    EXPECT_EQ(Scene::GetLastSceneIOError().file.filename(), "collide_lamp.prefab");
+    EXPECT_EQ(Scene::GetLastSceneIOError().line, 3);
 }
 
 // The marker holds only the source GUID, so a save with no asset database to name the

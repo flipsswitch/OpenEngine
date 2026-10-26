@@ -1023,6 +1023,22 @@ CBTCornersWS CBT_FetchCorners(uint slot, CBTFrameParams fp)
     return c;
 }
 
+// One render-origin-relative corner of `slot` (index 0, 1 or 2), equal to the matching R of
+// CBT_FetchCorners: it reads one 16-byte corner, the deep tag and, for a deep slot, that corner's sector.
+vec3 CBT_FetchCorner(uint slot, uint index, CBTFrameParams fp)
+{
+    vec3 local = index == 0u ? gVertex.Vertex[slot].corner0.xyz
+               : (index == 1u ? gVertex.Vertex[slot].corner1.xyz : gVertex.Vertex[slot].corner2.xyz);
+    if (gVertex.Vertex[slot].deepTag.x != 0u)
+    {
+        uvec2 packedSector = index == 0u ? gVertex.Vertex[slot].sector0
+                           : (index == 1u ? gVertex.Vertex[slot].sector1 : gVertex.Vertex[slot].sector2);
+        ivec3 originSector = ivec3(fp.renderOriginSector.xyz); // float holds the exact integer
+        return vec3(CBT_UnpackCornerSector(packedSector) - originSector) * CBT_SECTOR_SIZE + local;
+    }
+    return local - CBT_RenderOriginWorld(fp);
+}
+
 // Terrain UV (== the LEB unit-square coord) -> world XZ, matching the CDLOD vertex
 // path exactly: worldXZ = origin + uv * size (origin = terrain corner, not centre).
 vec2 CBT_TerrainToWorldXZ(vec2 uv, CBTFrameParams fp)

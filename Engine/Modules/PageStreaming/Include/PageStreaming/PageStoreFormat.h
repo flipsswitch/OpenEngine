@@ -9,6 +9,11 @@
 #include <span>
 #include <vector>
 
+namespace GameEngine::Mathematics
+{
+struct Vector3;
+}
+
 namespace GameEngine::PageStreaming
 {
 
@@ -70,6 +75,9 @@ enum class PageFieldKind : uint8
     Normal = 2,       ///< the surface normal's x and z
     GrassControl = 3, ///< the grass height and density targets
     Color = 4,        ///< the premultiplied color map and its weight
+    /// A Normal store's unencoded samples, from which its coarser pages are filtered. A bake cache
+    /// beside the store: never in a terrain container.
+    NormalSamples = 5,
 };
 
 /// How a page's samples are stored.
@@ -117,7 +125,50 @@ enum class PageHeightUnits : uint8
 enum class PageFaceMap : uint8
 {
     Flat = 0, ///< one face on the plane
+    /// Six square cube faces on the sphere, in the order of Mathematics::kCubeFaces, on the
+    /// equal-angle lattice. A face's sample (0, 0) is its corner 0, and X and Z run to its corners 1
+    /// and 3 (Mathematics::kCubeFaceAxes).
+    EqualAngleCube = 1,
 };
+
+/// A side of a cube face's sample grid.
+enum class PageFaceSide : uint8
+{
+    MinZ = 0, ///< the first row
+    MaxZ = 1, ///< the last row
+    MinX = 2, ///< the first column
+    MaxX = 3, ///< the last column
+};
+
+/// Sides of a face.
+inline constexpr uint32 kPageFaceSides = 4u;
+
+/// Where a cube face's side meets the next face: the face and its side that share the edge, and
+/// whether the sample index along the edge runs the other way on that face.
+struct PageFaceEdge
+{
+    uint8 Face = 0;
+    PageFaceSide Side = PageFaceSide::MinZ;
+    bool Reversed = false;
+};
+
+/// The face of an EqualAngleCube store that shares `side` of `face`.
+PageFaceEdge PageFaceNeighbor(uint8 face, PageFaceSide side);
+
+/// The equal-angle coordinate s in [-1, 1] of the gnomonic (straight cube) coordinate a in [-1, 1]:
+/// p(a) = a + a (a^2 - 1) r(a^2), r a cubic fit to (4 / pi) atan(a), odd and exact at -1, 0 and 1.
+/// A format constant, in double precision with contraction off: a new coefficient changes every cooked planet byte.
+float64 EqualAngleFaceCoordinate(float64 gnomonic);
+
+/// The gnomonic coordinate whose equal-angle coordinate is `equalAngle` in [-1, 1]: Newton on
+/// EqualAngleFaceCoordinate, a fixed count of steps from a = s, so every machine computes the same
+/// value. Odd bit for bit, exact at -1, 0 and 1.
+float64 GnomonicFaceCoordinate(float64 equalAngle);
+
+/// The equal-angle coordinate of level-0 sample `index` of a face of `samples` samples a side:
+/// (2 index - (samples - 1)) / (samples - 1), so index and samples - 1 - index give s and -s bit
+/// for bit, and the face's first and last samples sit on its edges.
+float64 EqualAngleSampleCoordinate(uint32 index, uint32 samples);
 
 /// The fixed header of a store. Units, ReferenceRadius and StepPerLevel describe a HeightSteps
 /// store and are zero on every other format.
@@ -215,19 +266,38 @@ std::vector<PageStoreLevel> BuildPageStoreLevels(uint32 samplesX, uint32 samples
 /// The pages of every level of one face of `levels`: the length of a face's dense table.
 uint64 DensePageCount(std::span<const PageStoreLevel> levels);
 
+/// True when `format` stores compressed blocks (Bc5): a loaded page holds the stored blocks, and
+/// the GPU samples them as they are.
+bool IsBlockFormat(PageFieldFormat format);
 /// Samples a page of `format` stores per axis: kPageStrideSamples, or 136 for a block format (its
 /// owned samples and a block on each side).
 uint32 PageStrideTexels(PageFieldFormat format);
 /// Bytes of one decoded sample of `format`: a float32 height, or the format's channels.
 uint32 PageTexelBytes(PageFieldFormat format);
+/// Stores the unit normal `normal` as a normal sample: (x, z) * 0.5 + 0.5 in two unsigned bytes.
+void EncodeNormalSample(const Mathematics::Vector3& normal, uint8* outTexel);
 /// The stored bytes of one page of `format`; a HeightSteps page holds 16-bit words, or 32-bit
 /// integers when `wide`.
 uint32 PageStoredBytes(PageFieldFormat format, bool wide);
+/// The bytes one loaded page of `format` holds, on the CPU and in its cache slot: its decoded
+/// samples (PageStrideTexels(format)^2 of PageTexelBytes(format) bytes), or for a block format its
+/// stored blocks, which the GPU samples as they are.
+uint32 PagePayloadBytes(PageFieldFormat format);
+/// A loaded height page's bytes as its kPageSampleCount float32 heights (row-major, apron
+/// included): the one view every height reader takes of a page's bytes.
+std::span<const float32> HeightSamples(std::span<const uint8> bytes);
+/// The same view, writable: the page's heights change in place.
+std::span<float32> HeightSamples(std::vector<uint8>& bytes);
 
 /// The layout of a store with `header`: every level, and an entry for each page that `present`
 /// (one byte per page of the dense table, face-major, then level, then row-major) marks non-zero;
 /// an empty `present` makes every page present. Offsets are assigned as the pages are written
 /// (PageStoreWriter).
 PageStoreLayout MakePageStoreLayout(const PageStoreHeader& header, std::span<const uint8> present = {});
+
+/// The layout of `layout`'s store with more pages present: its own present pages keep their
+/// entries, and each page `present` marks (as MakePageStoreLayout reads it) is added unwritten.
+/// For a store that grows as its pages are baked; PageStoreWriter::OpenForPatch takes the result.
+PageStoreLayout AddPresentPages(const PageStoreLayout& layout, std::span<const uint8> present);
 
 } // namespace GameEngine::PageStreaming

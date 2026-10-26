@@ -36,6 +36,9 @@ set(EDITOR_TEST_SOURCES
 	SceneViewFarPlaneTests.cpp
 	SceneViewCameraRigTests.cpp
 	ScenePickPendingBvhTests.cpp
+	# The extrude controller's hold over a mesh still preparing its picking data,
+	# driven on RenderServices with no device. It stays here for its one case over an
+	# editor pick provider.
 	SplineConformHoldTests.cpp
 	TerrainBrushPlanetCastTests.cpp
 	UndoRedoServiceTests.cpp
@@ -94,15 +97,6 @@ set(EDITOR_TEST_SOURCES
 	# the engine's SceneRaycast provides the raycast.
 	SplineDrapeTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/SceneView/SplineDrapePolylines.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Placement/SplineSurfaceConform.cpp
-	# The settle observation's surface term: a ConformMode=None recipe takes no
-	# term, so terrain churn (tile streaming, modifier bakes) cannot starve its
-	# rebuilds; conforming recipes pass the world digest through.
-	SplineSurfaceObservationTests.cpp
-	# The observe, settle and defer gate every spline recipe controller rebuilds
-	# through, over the real class (the controllers need live RenderServices).
-	SplineRebuildGateTests.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Placement/SplineRebuildGate.cpp
 	# Shared module suites exercise the runtime implementation through Engine.
 	# Editor controller/integration tests retain the Placement forwarding headers.
 	${CMAKE_SOURCE_DIR}/Engine/Modules/SplineLayout/Tests/TileLayoutTests.cpp
@@ -121,114 +115,14 @@ set(EDITOR_TEST_SOURCES
 	# Same contract for the fence recipe, plus the NaN self-inequality guard
 	# that keeps the settle-timer rebuild from re-arming forever.
 	SplineFenceRecipeTests.cpp
-	# What a fence conform ray may land on, end to end: the drape, the run fill
-	# solved from the DRAPED length, and the per-station probe. Needs the world
-	# fixture (terrain + picker) from the drape group above as well as the fence
-	# runtime layout linked through Engine.
-	FenceConformTargetTests.cpp
-	# Same contract again for the generated-geometry recipe, whose every-field
-	# equality guard is what keeps a mesh regenerating after a profile edit,
-	# plus the NaN self-inequality guard shared with the fence. The sanitize TU
-	# is a leaf over the component header only.
-	SplineExtrudeRecipeTests.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Placement/SplineExtrudeSanitize.cpp
-	# The swept wall's recipe contract: its exact size, every field in equality,
-	# the sanitizer, and the corner a wall starts with, derived from its spline's
-	# type when it is added and when it is reset.
-	SplineWallRecipeTests.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Placement/SplineWallSanitize.cpp
-	# What a recipe's declared ground authority provisions, and the bar it is held
-	# to: a provisioned run must bake the hand-authored pooled flatten to the BIT,
-	# or there are two shapes of graded run to keep correct instead of one. Also
-	# pins the steady-state no-write, without which the run re-bakes every frame.
-	SplineGroundAuthorityTests.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Placement/SplineGroundAuthority.cpp
-	# The extrude rebuild's slot reconciliation and chunk carving: chunk slots
-	# are addressed by index so a mid-run empty chunk leaves a hole rather than
-	# shifting its neighbour's mesh into its slot, and the carve must cover the
-	# whole run — shared boundaries, no head hole, capped tail folded in. Leaf
-	# TU (Types.h only).
-	SplineChunkSlotTests.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Placement/SplineChunkSlots.cpp
-	# The chunk commit both generated-geometry controllers register their meshes
-	# through: stable keys re-registered in place, holes, tail retirement and
-	# the release of every key a build no longer reaches. Driven on a registry
-	# with no device and a bare world.
-	SplineChunkCommitTests.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Placement/SplineChunkCommit.cpp
-	# The extrude controller's hold over a mesh still preparing its picking data
-	# (SplineConformHoldTests), driven on RenderServices with no device.
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Placement/SplineExtrudeController.cpp
-	# The fence's cut span variants from the layout's plan to the registry: the
-	# unit SplineFenceController::Rebuild hands its plan to, on a registry with
-	# no device — dedupe, stable keys, release, the byte budget, open meshes.
-	FenceMitreVariantsTests.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Placement/FenceMitreVariants.cpp
-	# End-to-end coverage of the extrude's None-conform station path over the
-	# RiverVignette water spline: arc sampling (Spline, via Engine.dll), chunk
-	# carving and the strip sweep (SplineGeometry, via Engine.dll) together must
-	# sweep every metre of the authored curve.
-	SplineExtrudeCoverageTests.cpp
-	# The water fill through its editor entry point, against a real terrain: the
-	# ROI lands on the terrain's own sample lattice, and EndTaperMetres is
-	# IGNORED in FitToBanks (asserted as byte identity, with the sea-level floor
-	# as the positive control that the comparison can fail at all).
-	SplineFillRebuildTests.cpp
-	# The refusal warnings themselves: a count and a magnitude locate nothing, so
-	# each line has to carry the world position of the sample it is worst at.
-	WaterFillDiagnosticsReportTests.cpp
-	# Where the region STOPS, against the IslandVignette terrain rebuilt from its
-	# own scene: no wet corner may stand above the elevation at which its region
-	# would escape, and the region's edge over falling ground is that rim rather
-	# than the MaxHalfWidth corridor.
-	WaterFillTerminationTests.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Placement/SplineFillRebuild.cpp
-	# The composed-ground query and the signed ground-to-underside gap, against a
-	# flat synthetic base so a modifier is the only thing that can move a reading.
-	# Pieces are rotated, scaled and mirrored — a level piece is the one pose where
-	# a box around a piece and the piece itself agree — and both residencies run.
-	PlacementGroundGapTests.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Placement/PlacementGroundGap.cpp
-	# Byte-identity oracle for the Channel sweep over that same run. The region
-	# fill takes over FitToBanks only; this pins Channel's vertices, indices and
-	# bounds to a digest captured before the fill landed, tapered and untapered.
-	SplineChannelParityTests.cpp
-	# The same byte-identity bar for every path and road the generic sweep builds
-	# (Bevel, Crown), through the controller's own station stream: open and
-	# closed, Linear and smooth, level and sloped ground, a transformed placer.
-	SplineSweepParityTests.cpp
-	# The swept wall's corners, closed loops, base, steps and texture coordinates,
-	# held at the numbers the swept-wall design names, through the wall
-	# controller's own pipeline on the same station stream.
-	SplineSweepWallTests.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Placement/SplineSweepStations.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Placement/SplineWallBuild.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Placement/RecipeValidation.cpp
-	# Piece material binding shared by both spline controllers: which material a
-	# spawned piece ends up with. The bind half touches no RenderServices, so the
-	# override contract is pinned here as a leaf TU over ModelRenderSetup.
-	SplinePieceMaterialTests.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Placement/SplinePieceMaterial.cpp
-	# The fence controller's emission list: stations, spans, then the crest row
-	# in layout order, each role under its own mesh signature base, and a
-	# registered crest at its wall's length scale. Leaf TU over plain pool
-	# entries; the controller needs a live RenderServices to resolve them.
-	FenceEmissionTests.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Placement/FenceEmission.cpp
-	# A fence's piece entities survive a rebuild by what they are, not where
-	# they fall in the list, so a picked span keeps its identity.
-	FencePieceReuseTests.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Placement/FencePieceReuse.cpp
-	# What a fence layout reads from its recipe, the way the controller reads it.
-	FenceRecipeLayoutTests.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Placement/FenceRecipeLayout.cpp
-	# Writing a fence's span overrides: gate, pinned piece, clear, full table.
-	FenceSpanOverridesTests.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Placement/FenceSpanOverrides.cpp
 	# A fence's span overrides follow its spline's points through insert,
 	# delete and resample, and undo with them.
 	FenceSpanOverrideRemapTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Placement/FenceSpanOverrideRemap.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Placement/RecipeEditorHooks.cpp
+	# The ground authority's recipe-created cleanup through the undo journal; the
+	# rest of the authority's suite is SplineRecipesTests.
+	SplineGroundAuthorityUndoTests.cpp
 	# Piece entities are children of the placer, so the pose both controllers
 	# write is parent-local. The runtime helper uses TileLayout's TilePose; the
 	# coherence half drives the real TransformHierarchySystem.
@@ -282,8 +176,13 @@ set(EDITOR_TEST_SOURCES
 	# The Navigation Surface inspector: its reflected rows per mode, the bake status notice and the
 	# Bake action, over the reflection-driven row builder it composes.
 	NavigationSurfaceInspectorTests.cpp
+	SplineRecipeInspectorTests.cpp
 	NavigationBakedDataSaveTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/NavigationSurfaceInspector.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/SplineRecipeInspector.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/SplineFenceInspector.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/SplineFenceOverrideFields.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/SplinePlacementInspector.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/DefaultComponentInspector.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/RenderLayerField.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/SceneView/Gizmos/NavigationSurfaceGizmo.cpp
@@ -510,10 +409,12 @@ set(EDITOR_TEST_SOURCES
 	# TU (InputSystem only), so it compiles in rather than dragging EditorApplication.
 	RuntimeInputConnectionTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/PlayMode/RuntimeInputConnection.cpp
-	# When the editor grants the game's pointer lock. Leaf TU (InputSystem +
-	# Window), so it compiles in rather than dragging EditorApplication.
+	# When the editor grants the game's pointer lock, and which lock a window
+	# holds. Leaf TUs (InputSystem + Window), so they compile in rather than
+	# dragging EditorApplication.
 	GameViewPointerLockTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/PlayMode/GameViewPointerLock.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/PlayMode/WindowCursorLock.cpp
 	# The colour picker dialog's own routing: a UI-only chain, plus the
 	# eyedropper's screen-wide pointer grab and the Escape that ends it. Leaf TU
 	# (WindowInputRouter + std::function), so it compiles in rather than dragging
@@ -989,6 +890,8 @@ set(EDITOR_TEST_SOURCES
 	MaterialInspectorLayoutTests.cpp
 	# The percent row's value box holds "100 %" at the inspector's default width.
 	InspectorPercentRowLayoutTests.cpp
+	# An inspector label drag locks the pointer only past the drag threshold.
+	InspectorLabelDragPointerLockTests.cpp
 	# A pending asset's header: the name ellipsises first and "preparing" stays right after it.
 	PendingAssetHeaderLayoutTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/PendingAssetHeader.cpp
@@ -1085,40 +988,6 @@ add_executable(EditorTests ${EDITOR_TEST_SOURCES})
 
 # Find Google Test
 find_package(GTest REQUIRED)
-
-# Opt-in: the water fill's investigation instruments, which run against scenes in other content
-# repositories (GE_WATER_LIFT_REPRO_SCENE, GE_SCENE_WATER_GATE) and skip without them. Not
-# registered with CTest and run by no gate: build WaterFillInvestigationTests and run it with the
-# scene set.
-add_executable(WaterFillInvestigationTests
-	# The lifted river over an authored island terrain: does the lift enclose dry ground?
-	WaterFillLiftReproTests.cpp
-	# The fill applied to an authored scene file: load, provision the terrain data the schema
-	# does not carry, bake the modifier stack, and run the fill over every FitToBanks recipe.
-	SceneWaterFillGateTests.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Placement/SplineFillRebuild.cpp
-	${CMAKE_SOURCE_DIR}/Tests/EngineShutdownEnvironment.cpp
-)
-target_include_directories(WaterFillInvestigationTests PRIVATE
-	${CMAKE_SOURCE_DIR}/Engine/Source
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Include
-	${CMAKE_SOURCE_DIR}/Engine/Tests
-	${CMAKE_SOURCE_DIR}/Tests
-)
-target_link_libraries(WaterFillInvestigationTests PRIVATE
-	Engine
-	EditorSDK
-	GTest::gtest
-	GTest::gtest_main
-)
-set_target_properties(WaterFillInvestigationTests PROPERTIES
-	CXX_STANDARD 20
-	CXX_STANDARD_REQUIRED ON
-	VCPKG_APPLOCAL_DEPS OFF
-)
-ge_set_output_tests(WaterFillInvestigationTests)
-ge_stage_runtime_dependencies(WaterFillInvestigationTests)
 
 # Pure editing algorithms, independent of UI initialization and engine fixtures.
 add_executable(AnimationEditingTests AnimationEditingTests.cpp)
@@ -2045,6 +1914,8 @@ if(TARGET EditorTests)
 	    ${CMAKE_SOURCE_DIR}/Engine/Tests
 	    # UIRgTestHarness.h: headless device for a real UIManager.
 	    ${CMAKE_SOURCE_DIR}/Engine/Modules/UI/Tests
+	    # SplineGroundAuthorityTestWorld.h, the test world the undo cases share with SplineRecipesTests.
+	    ${CMAKE_SOURCE_DIR}/Engine/Modules/SplineRecipes/Tests
 	    # TestTempDir.h + WatchedFileEvents.h, shared across the test trees.
 	    ${CMAKE_SOURCE_DIR}/Tests
 	    ${CMAKE_SOURCE_DIR}/dependencies/vcpkg/installed/x64-windows/include
@@ -2224,13 +2095,14 @@ if(TARGET EditorTests)
 	    -P "${CMAKE_SOURCE_DIR}/cmake/RunTestExecutable.cmake"
 	)
 
-	# Spline recipe geometry: the fence layout solver, the recipe contracts and
-	# the extrude sweep's station stream.
+	# Spline recipe geometry the editor still holds: the fence layout solver, the
+	# placement and fence recipe contracts and the span override remap. The builders'
+	# suites are SplineRecipesTests.
 	add_test(NAME EditorTests.SplineRecipes
 	  COMMAND "${CMAKE_COMMAND}"
 	    -DTEST_EXE=$<TARGET_FILE:EditorTests>
 	    -DTEST_WORKING_DIR=$<TARGET_FILE_DIR:EditorTests>
-	    -DTEST_ARGS=--gtest_filter=FenceLayout.*:FenceEmission.*:FencePieceReuse.*:FenceRecipeLayout.*:FenceSpanOverrides.*:FenceSpanOverrideRemap.*:SplinePointEdits.*:SplineFenceRecipe.*:SplinePlacementRecipe.*:SplineExtrudeRecipe.*:SplineWallRecipe.*:SplineChunkSlots.*:SplineChunkCommit.*:FenceMitreVariants.*:CarveChunkRanges.*:SplineExtrudeCoverage.*:SplineSweepParity.*:SplineSweepWall.*:SplineSurfaceObservation.*:SplinePoolSelection.*:TileLayout.*
+	    -DTEST_ARGS=--gtest_filter=FenceLayout.*:FenceSpanOverrideRemap.*:SplinePointEdits.*:SplineFenceRecipe.*:SplinePlacementRecipe.*:SplinePoolSelection.*:TileLayout.*
 	    -P "${CMAKE_SOURCE_DIR}/cmake/RunTestExecutable.cmake"
 	)
 

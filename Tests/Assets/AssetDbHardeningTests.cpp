@@ -3457,9 +3457,9 @@ TEST(AssetDbHardening, ResolvePathTargetIteratesAllSources)
     fs::create_directories(editorRoot / "Icons", ec);
 
     const fs::path projectAsset = projectRoot / "models" / "knight.fbx";
-    const fs::path editorAsset  = editorRoot  / "Icons" / "play.png";
+    const fs::path editorAsset  = editorRoot  / "Icons" / "play.svg";
     WriteTextFile(projectAsset, "fbx");
-    WriteTextFile(editorAsset, "png");
+    WriteTextFile(editorAsset, "svg");
 
     JobSystem::WorkStealingThreadPool pool(2);
 

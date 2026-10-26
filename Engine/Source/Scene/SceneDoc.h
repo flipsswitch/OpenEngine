@@ -235,6 +235,8 @@ void PreserveOrDropUnhandledComponent(ECS::World& world, ECS::EntityHandle h, co
 void ApplyComponentBlock(ECS::World& world, const SceneLoadContext& ctx, const ISceneComponentSchema& schema,
                          ECS::EntityHandle h, const SceneDoc::ComponentProps& authored, const std::string& entityId,
                          const std::filesystem::path& ownerFile, int headerLine, SceneLoadDegradation* degradation);
+void ApplyFallbackName(ECS::World& world, const SceneLoadContext& ctx, ECS::EntityHandle h,
+                       std::string_view fallbackName, const std::string& entityId);
 void ApplyEntityComponents(ECS::World& world, const SceneLoadContext& ctx, const std::filesystem::path& ownerFile,
                            ECS::EntityHandle h, const SceneDoc::Entity& e, const std::string& entityId,
                            std::string_view fallbackName, SceneLoadDegradation* degradation);

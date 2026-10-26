@@ -458,10 +458,12 @@ bool NavigationTerrainSource::OverlapsXZ(float32 minX, float32 minZ, float32 max
            originZ + Query.FootprintSizeZ() >= minZ;
 }
 
-NavigationTerrainSource ResolveNavigationTerrainSource(ECS::World& world)
+NavigationTerrainSource ResolveNavigationTerrainSource(ECS::World& world,
+                                                       const Components::WorldTransform* surfaceTransform)
 {
     NavigationTerrainSource source;
-    source.Query = TerrainECS::ResolveSurfaceHeightQuery(world);
+    source.Query = TerrainECS::ResolveSurfaceHeightQuery(
+        world, surfaceTransform ? surfaceTransform->GetPosition() : Mathematics::Vector3{});
     if (!source.Query.IsValid())
     {
         bool first = true;

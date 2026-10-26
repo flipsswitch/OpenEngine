@@ -1848,6 +1848,30 @@ TEST_F(SceneTlasRequestFixture, FirstRequestReconcilesAndIdleRequestsDoNothing)
     EXPECT_EQ(tlas.GetRefitLeafCountForTesting(), refits);
 }
 
+// The version goes up when the tree changes and holds while it does not.
+TEST_F(SceneTlasRequestFixture, VersionChangesOnlyWithTheTree)
+{
+    ECS::World world;
+    auto e = MakeRealEntity(world, {5.0f, 0.0f, 0.0f});
+    SceneTlas& tlas = GetSceneTlas(world);
+    ASSERT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Ready);
+    const uint64 reconciled = tlas.Version();
+    EXPECT_NE(reconciled, 0u) << "the first reconcile did not change the version";
+
+    for (int i = 0; i < 3; ++i)
+        ASSERT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Ready);
+    EXPECT_EQ(tlas.Version(), reconciled) << "an idle request changed the version";
+
+    MoveEntity(world, e, {6.0f, 0.0f, 0.0f});
+    ASSERT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Ready);
+    const uint64 refit = tlas.Version();
+    EXPECT_GT(refit, reconciled) << "a refit did not change the version";
+
+    MakeRealEntity(world, {20.0f, 0.0f, 0.0f});
+    ASSERT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Ready);
+    EXPECT_GT(tlas.Version(), refit) << "a reconcile did not change the version";
+}
+
 // The S1 counter: movers do no TLAS work until a request, however many
 // frames they move; the first request then refits each moved leaf once. A
 // leaf is a sector replica: these entities straddle the y = 0 and z = 0

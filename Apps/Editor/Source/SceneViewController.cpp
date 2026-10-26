@@ -31,6 +31,7 @@
 #include "Rendering/Core/HzbCullingStrategy.h"
 #include "Rendering/Core/NoneCullingStrategy.h"
 #include "Rendering/Core/PipelineDescTranslator.h"
+#include "Rendering/Core/ReverseZ.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
 #include "Components/Rendering/Camera.h"
@@ -2419,7 +2420,7 @@ bool SceneViewController::DeclarePreviewTargetsRG(
         clear.clearColorValue[2] = static_cast<float>(bg & 0xFFu) / 255.0f;
         clear.clearColorValue[3] = 1.0f;
         clear.clearDepth = true;
-        clear.clearDepthValue = 0.0f;
+        clear.clearDepthValue = Rendering::ReverseZ::kClearFar;
         rs->Views().SetViewClearConfig(m_PreviewViewId, clear);
     }
 
@@ -2448,7 +2449,9 @@ bool SceneViewController::DeclarePreviewTargetsRG(
                       static_cast<unsigned long long>(windowId));
         td.sampleCount = samples;
         td.format = static_cast<uint32_t>(Rendering::TextureFormat::R16G16B16A16_FLOAT);
-        td.usage = static_cast<uint32_t>(Rendering::TextureUsage::RenderTarget);
+        // Sampled: the world pass resolves it with a shader.
+        td.usage = static_cast<uint32_t>(Rendering::TextureUsage::RenderTarget) |
+                   static_cast<uint32_t>(Rendering::TextureUsage::ShaderResource);
         td.debugName = "BookmarkPreview.ColorMsaa";
         msaaColor = frame.ImportPersistentTexture(nameBuf, td);
     }
@@ -4122,7 +4125,7 @@ bool SceneViewController::DeclareTargetsRG(Rendering::RenderGraph::RGFrame& fram
         clear.clearColorValue[3] = 1.0f;
     }
     clear.clearDepth = true;
-    clear.clearDepthValue = 0.0f;
+    clear.clearDepthValue = Rendering::ReverseZ::kClearFar;
     rs->Views().SetViewClearConfig(m_ViewId, clear);
 
     // Scene-view-local post-process override — identical to the old arm.
@@ -4307,7 +4310,7 @@ bool SceneViewController::DeclareTargetsRG(Rendering::RenderGraph::RGFrame& fram
     colorDesc.arrayLayers = 1;
     colorDesc.sampleCount = samples;
     colorDesc.format = static_cast<uint32_t>(TextureFormat::R16G16B16A16_FLOAT);
-    // TransferSrc: the presentation snapshot copies whichever colour target is
+    // TransferSrc: the presentation snapshot copies whichever color target is
     // single-sampled — this one when MSAA is off, the resolve (which inherits
     // this desc) when it is on. Pool-backed, so the desc is the only declaration.
     colorDesc.usage = static_cast<uint32_t>(Rendering::TextureUsage::RenderTarget) |

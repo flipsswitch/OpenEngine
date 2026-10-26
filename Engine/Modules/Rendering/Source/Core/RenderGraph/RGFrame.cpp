@@ -141,6 +141,9 @@ constexpr const char* kStoreNoneOnWrittenAttachment =
 constexpr const char* kStoreDontCareOnReadOnlyAttachment =
     "RenderGraph: a read-only depth attach preserves the contents — RGStoreOp::DontCare "
     "there asks to discard depth the pass is only reading";
+constexpr const char* kWritesEveryPixelLoads =
+    "RenderGraph: an attach that writes every pixel loads nothing; set RGLoadOp::Clear or DontCare, or "
+    "clear WritesEveryPixel";
 } // namespace
 
 void RGPassBuilder::AttachColor(uint32_t slot, RGTexture t, const RGAttachmentOps& ops, RGRange range)
@@ -154,7 +157,11 @@ void RGPassBuilder::AttachColor(uint32_t slot, RGTexture t, const RGAttachmentOp
     // carries ColorRead (visibility — not just availability — of the write).
     if (ops.Load == RGLoadOp::Load)
         m_Frame->m_Graph.Read(m_Pass, t.Id, RGAccess::ColorLoad, range);
-    m_Frame->m_Graph.Write(m_Pass, t.Id, RGAccess::ColorAttachment, range);
+    assert((!ops.WritesEveryPixel || ops.Load != RGLoadOp::Load) && kWritesEveryPixelLoads);
+    if (ops.WritesEveryPixel)
+        m_Frame->m_Graph.WriteEveryPixel(m_Pass, t.Id);
+    else
+        m_Frame->m_Graph.Write(m_Pass, t.Id, RGAccess::ColorAttachment, range);
     m_Frame->m_Attachments.push_back(
         RGAttachmentRec{m_Pass, slot, t.Id, kInvalidId, ops, /*IsDepth=*/false, /*ReadOnly=*/false, range});
 }

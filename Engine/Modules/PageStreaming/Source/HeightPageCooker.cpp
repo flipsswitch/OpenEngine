@@ -1,5 +1,6 @@
 #include "PageStreaming/HeightPageCooker.h"
 
+#include "HeightCookBands.h"
 #include "PagePyramidBuilder.h"
 #include "HeightSourceRows.h"
 #include "HeightStepPlanner.h"
@@ -28,8 +29,6 @@ namespace
 
 // Bytes read per step of the whole-file scan.
 constexpr std::size_t kScanChunkBytes = 64u * 1024u * 1024u;
-// Level-0 rows read per step of the cook: one page row's owned rows.
-constexpr uint32 kCookBandRows = kPageOwnedSamples;
 
 std::string LowerExtension(const std::filesystem::path& file)
 {
@@ -138,11 +137,6 @@ std::string StartStore(const HeightCookRequest& request, const PageStoreHeader& 
     return writer.Create(request.Output, MakePageStoreLayout(header));
 }
 
-bool Cancelled(const std::atomic<bool>* cancel)
-{
-    return cancel && cancel->load();
-}
-
 } // namespace
 
 std::string ResolveHeightCookSource(const std::filesystem::path& file, uint32 samplesX, uint32 samplesZ,
@@ -174,7 +168,7 @@ std::string ScanHeightSource(const HeightCookSource& source, AssetIOService* io,
     identity.SamplesX = source.SamplesX;
     identity.SamplesZ = source.SamplesZ;
     const bool ranged = source.Format == HeightSourceFormat::R32;
-    HeightStepPlanner planner(ranged ? source.SamplesX : 0u, ranged ? source.SamplesZ : 0u);
+    HeightStepPlanner planner(ranged ? source.SamplesX : 0u, ranged ? source.SamplesZ : 0u, 1u);
 
     // One chunk is read ahead while the one before it is hashed.
     SourceRangeReader reader(source.File, io);
@@ -224,33 +218,21 @@ HeightCookResult CookHeightPageStore(const HeightCookRequest& request)
         return result;
 
     // Each band is read while the band before it builds the pyramid.
-    PagePyramidBuilder builder(writer, result.Patched, request.Pool);
+    PagePyramidBuilder builder(writer, result.Patched, request.Pool, nullptr);
     const uint32 height = request.Source.SamplesZ;
-    std::vector<float32> band(static_cast<std::size_t>(request.Source.SamplesX) * kCookBandRows);
-    rows.RequestRows(0, std::min(kCookBandRows, height));
-    bool readOk = true;
-    for (uint32 row = 0; row < height;)
+    const CookBandResult bands = PushCookBands(
+        rows, 0, height, request.Source.SamplesX, request.Cancel, builder,
+        [&request, height](const float32*, uint32 row, uint32 count) {
+            if (request.Progress)
+                request.Progress->RowsDone.store(static_cast<uint64>(height) + row + count);
+        });
+    if (bands == CookBandResult::Cancelled)
     {
-        const uint32 count = std::min(kCookBandRows, height - row);
-        readOk = rows.TakeRows(band.data());
-        if (!readOk)
-            break;
-        const uint32 nextRow = row + count;
-        if (nextRow < height)
-            rows.RequestRows(nextRow, std::min(kCookBandRows, height - nextRow));
-        if (Cancelled(request.Cancel))
-        {
-            if (nextRow < height)
-                rows.TakeRows(band.data()); // never leave a read outstanding past the reader
-            writer.Abandon();
-            result.Error = "the cook was cancelled";
-            return result;
-        }
-        builder.PushLevel0Rows(reinterpret_cast<const uint8*>(band.data()), count);
-        row = nextRow;
-        if (request.Progress)
-            request.Progress->RowsDone.store(static_cast<uint64>(height) + row);
+        writer.Abandon();
+        result.Error = "the cook was cancelled";
+        return result;
     }
+    const bool readOk = bands == CookBandResult::Done;
     if (!readOk || !builder.Finish())
     {
         writer.Abandon();

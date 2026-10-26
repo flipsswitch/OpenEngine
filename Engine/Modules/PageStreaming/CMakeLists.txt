@@ -25,9 +25,14 @@ add_library(PageStreaming OBJECT
     Source/HeightStoreCache.cpp
     Source/HeightSourceRows.cpp
     Source/SourceRangeReader.cpp
+    Source/PageFieldFilter.cpp
     Source/PagePyramidBuilder.cpp
+    Source/PageStorePatcher.cpp
     Source/HeightStepPlanner.cpp
+    Source/HeightCookBands.cpp
     Source/HeightPageCooker.cpp
+    Source/PlanetPageCooker.cpp
+    Source/PageFaceSeams.cpp
     Source/TerrainPageContainer.cpp
     Source/NonInheritedFile.cpp
 )

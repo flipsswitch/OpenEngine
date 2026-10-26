@@ -19,7 +19,7 @@
 #include "Markups/MarkupEditorBridge.h"
 #include "Picking/ScenePick.h"
 #include "Placement/CenterlineSampling.h"
-#include "Placement/SplineSurfaceConform.h"
+#include "SplineRecipes/SplineSurfaceConform.h"
 #include "Placement/TileLayout.h"
 #include "SceneView/SplineDrapePolylines.h"
 #include "Spline/SplineData.h"
@@ -201,7 +201,7 @@ MarkupRegionFrameGround ReadMarkupRegionFrameGround(ECS::World& world)
     frameGround.SeaLevel = ResolveMarkupSeaLevel(world);
     // The regions stand on the terrain by raycast, which reads the resident tiles only
     // (ConformSurfaceRevision).
-    frameGround.GroundRevision = ConformSurfaceRevision(world, nullptr);
+    frameGround.GroundRevision = SplineRecipes::ConformSurfaceRevision(world, nullptr);
     return frameGround;
 }
 

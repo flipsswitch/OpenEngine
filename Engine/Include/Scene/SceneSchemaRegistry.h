@@ -201,6 +201,10 @@ class SceneSchemaRegistry
 
     static std::vector<const ISceneComponentSchema*> GetAllSorted();
 
+    // Every registered component type that a scene saves, each once: the types of the hand-written
+    // schemas and every reflected type that saves through its reflection schema, C# components included.
+    static std::vector<ECS::ComponentTypeId> GetSavedComponentTypes();
+
     // Save-side reflection fallback: returns a synthesized reflection schema for `typeId` ONLY when
     // the type is reflected AND no hand-written schema serializes it (FindForComponentType is null),
     // so the save loop serializes reflected components a built-in schema doesn't already cover.

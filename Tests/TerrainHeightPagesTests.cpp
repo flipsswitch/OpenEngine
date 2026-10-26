@@ -266,7 +266,7 @@ TEST(TerrainHeightPages, AnOverlayOfRebuiltModifierDataRewritesEveryPageTheOldOv
         for (const HeightPageUpload& upload : pages.Uploads())
         {
             ++rewritten;
-            for (float32 sample : upload.Samples)
+            for (float32 sample : PageStreaming::HeightSamples(upload.Bytes))
                 ASSERT_LT(sample, 1.0f) << "a rewritten page carries no overlay";
         }
     }

@@ -76,6 +76,7 @@ float CBT_ChainLoad(uint word)
 #include "CBTTerrain/CBTResources.h"
 #include "CBTTerrain/CBTTreeAudit.h"
 #include "CBTDiamond.h"
+#include "CBTReliefHeightSource.h"
 #include "CBTTestHarness.h"
 #include "Mathematics/Interpolation.h"
 #include "Mathematics/MatrixOps.h"
@@ -275,36 +276,9 @@ class CBTHeightChain : public ::testing::Test
             m_Device->Shutdown();
     }
 
-    void Upload(TextureHandle tex, const std::vector<float>& data, uint32_t width, uint32_t height, ResourceState prior)
-    {
-        const size_t bytes = data.size() * sizeof(float);
-        BufferHandle staging = m_Device->CreateUploadBuffer(bytes, "CBT.Test.ChainStaging");
-        m_Device->UpdateBuffer(staging, 0, bytes, data.data());
-        auto cl = m_Device->CreateCommandList(IDevice::QueueType::Graphics);
-        cl->Begin();
-        cl->CopyBufferToTextureSubresource(staging, tex, 0, 0, width, height, 0, static_cast<size_t>(width) * sizeof(float),
-                                           1, 0, 0, 0, prior);
-        cl->Barrier(ResourceBarrier::CreateTextureBarrier(tex, ResourceState::CopyDest, ResourceState::ShaderResource));
-        cl->End();
-        std::vector<CommandList*> lists{cl.get()};
-        m_Device->ExecuteCommandLists(lists);
-        m_Device->WaitForIdle();
-        m_Device->DestroyBuffer(staging);
-    }
-
     TextureHandle MakeTexture(const std::vector<float>& data, uint32_t width, uint32_t height)
     {
-        TextureDesc td{};
-        td.width = width;
-        td.height = height;
-        td.format = static_cast<uint32_t>(TextureFormat::R32_FLOAT);
-        td.usage = static_cast<uint32_t>(TextureUsage::ShaderResource) | static_cast<uint32_t>(TextureUsage::TransferDst);
-        td.persistent = true;
-        td.debugName = "CBT.Test.ChainHeights";
-        TextureHandle tex = m_Device->CreateTexture(td);
-        if (tex.IsValid())
-            Upload(tex, data, width, height, ResourceState::Undefined);
-        return tex;
+        return MakeR32Texture(*m_Device, width, height, data, "CBT.Test.ChainHeights");
     }
 
     // An instance on `tex` with the chain provisioned for the lattice.
@@ -721,7 +695,7 @@ TEST_F(CBTHeightChain, EditRectRebuildsOnlyTheSamplesItsTentsReach)
     for (uint32_t z = 40u; z < 60u; ++z)
         for (uint32_t x = 400u; x < 430u; ++x)
             uploaded[static_cast<size_t>(z) * kN + x] -= 0.5f;
-    Upload(tex, uploaded, kN, kN, ResourceState::ShaderResource);
+    UploadR32Texture(*m_Device, tex, kN, kN, uploaded, ResourceState::ShaderResource);
     // The rect the terrain announces for that texel rect (TerrainRenderFeature::AccumulateUnifiedHeightDirty).
     const GameEngine::Mathematics::Rect rect = GameEngine::Mathematics::Rect::FromEdges(
         (200.0f - 1.0f) / kN, (300.0f - 1.0f) / kN, (232.0f + 1.0f) / kN, (312.0f + 1.0f) / kN);
@@ -821,7 +795,7 @@ class CBTHeightPyramid : public CBTHeightChain
         Run(inst, p, 1u, 0u);
         const BufferHandle range = inst.GetResources().GetHeightRangeBuffer();
         const std::vector<uint32_t> old = ReadWords(range, kCBTHeightRangeBufferWords);
-        Upload(tex, uploaded, kN, kN, ResourceState::ShaderResource);
+        UploadR32Texture(*m_Device, tex, kN, kN, uploaded, ResourceState::ShaderResource);
         // The rect the terrain announces for that texel rect (CBTUpdateSystem::ConsumeDirtyRegion): one
         // texel of padding each side, the upper edge exclusive.
         const GameEngine::Mathematics::Rect rect = GameEngine::Mathematics::Rect::FromEdges(

@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <filesystem>
+#include <functional>
 #include <string>
 
 namespace JobSystem
@@ -14,6 +15,11 @@ class WorkStealingThreadPool;
 namespace GameEngine
 {
 class AssetIOService;
+}
+
+namespace GameEngine::Mathematics
+{
+struct Vector3;
 }
 
 namespace GameEngine::PageStreaming
@@ -94,5 +100,29 @@ struct HeightCookResult
 /// does. Blocks the calling thread until the store is published or the cook fails: call it from a
 /// thread that is not a job-pool worker.
 HeightCookResult CookHeightPageStore(const HeightCookRequest& request);
+
+/// One cook of a planet's height store: six cube faces on the equal-angle lattice
+/// (PageFaceMap::EqualAngleCube).
+struct PlanetCookRequest
+{
+    /// The height above the reference radius (h = r - R, in meters) at sample (x, z) of `face`, whose
+    /// unit direction from the center is `direction`. An edge sample has an address on each of its
+    /// faces: return one height for one direction. Called from the pool's workers at once: thread-safe.
+    std::function<float32(uint8 face, uint32 x, uint32 z, const Mathematics::Vector3& direction)> Height;
+    float64 ReferenceRadius = 0.0; ///< R, in meters
+    /// Level-0 samples along a face's side, m x 2^k + 1 with m at most 128, so every level has a
+    /// sample on each of the face's edges.
+    uint32 FaceSamples = 0;
+    uint64 Key = 0;
+    std::filesystem::path Output;
+    /// Workers for the per-row and per-page work; null runs it on the calling thread.
+    JobSystem::WorkStealingThreadPool* Pool = nullptr;
+    const std::atomic<bool>* Cancel = nullptr;
+};
+
+/// Cooks a planet's height store: six faces on the equal-angle lattice, each edge page's apron from
+/// the neighbor face. Level 0 is written beside the store (4 bytes a sample) and read back. Blocks
+/// the calling thread: call it from a thread that is not a job-pool worker.
+HeightCookResult CookPlanetPageStore(const PlanetCookRequest& request);
 
 } // namespace GameEngine::PageStreaming

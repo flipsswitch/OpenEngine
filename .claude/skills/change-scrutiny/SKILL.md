@@ -80,7 +80,8 @@ grep -n -E '\bfloat\s+\w+\[(3|4|9|16)\]|std::array<float,\s*(3|4|9|16)>' $(cat /
 grep -n -E '^#include' $(cat /tmp/touched.txt)                                                                     # the order: own header, module headers, standard library, third-party
 grep -n -E '\b(std::thread|std::async|std::jthread|CreateThread|_beginthread)\b' $(cat /tmp/touched.txt)            # a thread of the change's own
 grep -n -E '\[&\]' $(cat /tmp/touched.txt)                                                                        # a lambda capturing everything: a named function instead
-grep -n -E '\bTODO\b|\bFIXME\b|^\s*(//|\*|#)\s*.*\b(was|previously|used to|no longer|legacy|before this|after this|renamed from|moved from|this fix|this change|this PR|the review|fold)\b' $(cat /tmp/touched.txt)   # vague TODOs; history and change narration in comments
+grep -n -E '\bTODO\b|\bFIXME\b' $(cat /tmp/touched.txt)                                                          # vague TODOs
+grep -n -i -E "^\s*(//|\*|#).*\b($(paste -sd'|' Tools/CleanupGate/history_words.txt))\b" $(cat /tmp/touched.txt)   # change narration in comments: the word list of the cleanup gate's history_comment
 ```
 
 Fix what the pass and the greps find before the pull request opens. A reviewer walks the same list and runs the same greps, and a style item it finds is a should-fix, not taste. The "Reuse and surface" section of the body ends with one line that names what was checked: `Style pass: names, raw arrays, include order, threads, lambdas, comments checked over N files; nothing left`, or the items left with their reason (a layout a boundary pins, a third-party signature). A line that claims nothing left over a diff with a miss is the finding at the top of the review.

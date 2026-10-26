@@ -51,9 +51,10 @@ public:
     /// absent, `outSamples` is not the page's size, or the read fails.
     bool ReadPageSamples(const PageAddress& address, std::span<uint8> outSamples) const;
 
-    /// Reads and decodes a present page of a height store into kPageSampleCount samples (row-major,
-    /// apron included). False when the store holds no heights, the page is absent or the read fails.
-    bool ReadHeightPage(const PageAddress& address, std::span<float32> outSamples) const;
+    /// A present page's loaded bytes from its stored bytes `stored`: PagePayloadBytes(format) bytes,
+    /// the codec's samples, or a block format's blocks as stored. False when the page is absent or
+    /// `stored` is not its stored size.
+    bool DecodePayload(const PageAddress& address, std::span<const uint8> stored, std::vector<uint8>& outPayload) const;
 
 private:
     std::filesystem::path m_File;

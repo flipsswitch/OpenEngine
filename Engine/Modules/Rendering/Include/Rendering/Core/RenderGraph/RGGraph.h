@@ -109,6 +109,9 @@ struct RGAccessRecord
     RGResourceId Resource = kInvalidId;
     RGAccess Access = RGAccess::Sampled;
     RGRange Range{}; // subresource granularity (whole resource by default)
+    // A write that replaces every pixel of the resource, so an earlier write is dead unless a pass
+    // reads it in between. Set only through RGGraph::WriteEveryPixel.
+    bool WritesEveryPixel = false;
 };
 
 // A GPU submission: a maximal run of consecutive same-queue passes in the
@@ -185,6 +188,9 @@ class RGGraph
     RGPassId AddPass(const RGPassDesc& desc);
     void Read(RGPassId pass, RGResourceId resource, RGAccess access, RGRange range = RGRange::All());
     void Write(RGPassId pass, RGResourceId resource, RGAccess access, RGRange range = RGRange::All());
+    // A color attachment write that replaces every pixel of a one-mip, one-layer texture and reads
+    // none. Compile culls an earlier write to it with no read in between (RGCullReason::Overwritten).
+    void WriteEveryPixel(RGPassId pass, RGResourceId resource);
     // Force a pass to survive cull even with no consumed output (side effects,
     // queries, debug). Equivalent intent to RDG's PreventCulling.
     void PreventCulling(RGPassId pass);
@@ -357,6 +363,16 @@ class RGGraph
         RGCullReason CullReason = RGCullReason::NotCulled;
     };
 
+    // What one pass does to one resource, merged over the pass's accesses to it (Compile scratch).
+    struct RGPassTouch
+    {
+        RGPassId Pass = kInvalidId;
+        bool Reads = false;
+        bool Writes = false;
+        bool WritesEveryPixel = false;
+    };
+    void CollectLiveWriters();
+
     // Per-frame declarations (cleared in BeginFrame, capacity retained).
     std::vector<RGResourceDesc> m_Resources;
     std::vector<uint8_t> m_ResourceExternal;       // parallel to m_Resources
@@ -457,6 +473,8 @@ class RGGraph
     std::vector<std::vector<RGPassId>> m_ScratchWritersOf;
     std::vector<std::vector<RGResourceId>> m_ScratchReadsOf;
     std::vector<uint8_t> m_ScratchResHasReader;
+    std::vector<std::vector<RGPassTouch>> m_ScratchTouchesOf;
+    std::vector<uint8_t> m_ScratchPassOverwritten;
     // Schedule:
     std::vector<std::vector<RGResourceId>> m_ScratchAttSet;
     std::vector<std::vector<RGPassId>> m_ScratchSucc;

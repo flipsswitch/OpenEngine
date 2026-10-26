@@ -444,8 +444,11 @@ if(Python3_Interpreter_FOUND)
     COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_SOURCE_DIR}/Tools/CleanupGate/cleanup_gate.py
             --root ${CMAKE_SOURCE_DIR})
   set_tests_properties(CleanupGateTests PROPERTIES TIMEOUT 300)
+  add_test(NAME CleanupGateRuleTests
+    COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_SOURCE_DIR}/Tools/CleanupGate/test_rule_comments.py)
+  set_tests_properties(CleanupGateRuleTests PROPERTIES TIMEOUT 60)
 else()
-  message(STATUS "Python 3 not found - CleanupGateTests not registered")
+  message(STATUS "Python 3 not found - CleanupGateTests and CleanupGateRuleTests not registered")
 endif()
 
 # The host cook reads and writes packages only through ShaderReflect.
@@ -680,6 +683,7 @@ add_executable(ScriptingAbiIntegrationTests
     Integration/ScriptingAbiUiTypeOwnerTests.cpp
     Integration/ScriptingAbiInputActionTests.cpp
     Integration/ScriptingAbiPathMaskTests.cpp
+    Integration/ScriptingAbiPrefabSpawnTests.cpp
     # Opening a project loads its C# scripts and applies the kept components (#4050).
     Integration/ProjectScriptsOnOpenTests.cpp
     # The unity-import package's converter assembly on the engine's CoreCLR,

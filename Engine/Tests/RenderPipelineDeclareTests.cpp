@@ -192,6 +192,26 @@ TextureDesc DepthTargetDesc(uint32_t samples = 1)
     return d;
 }
 
+// A multisampled view color the scene color resolve can sample.
+TextureDesc SampledMsaaColorDesc()
+{
+    TextureDesc d = ColorTargetDesc(4);
+    d.usage |= static_cast<uint32_t>(TextureUsage::ShaderResource);
+    return d;
+}
+
+// The pass that resolves what `writer` drew into `msaa` into `resolved` (MsaaColorResolvePass names it
+// after the writer), kInvalidId when there is none.
+RenderGraph::RGPassId ColorResolvePassOf(const RenderGraph::RGGraph& g, RenderGraph::RGPassId writer,
+                                         RenderGraph::RGResourceId msaa, RenderGraph::RGResourceId resolved)
+{
+    const std::string name = std::string(g.PassName(writer)) + ".ColorResolve";
+    for (RenderGraph::RGPassId p = 0; p < g.PassCount(); ++p)
+        if (name == g.PassName(p) && g.HasReadAccess(p, msaa) && g.HasWriteAccess(p, resolved))
+            return p;
+    return RenderGraph::kInvalidId;
+}
+
 // Records every DeclareForView invocation; optionally publishes/resolves
 // blackboard entries so tests can pin the cross-node threading.
 struct DeclareProbeNode final : IRenderPipelineNode
@@ -5754,7 +5774,7 @@ TEST(RenderPipelineDeclareTests, MsaaOnKeepsViewColorMultisampledAndWorldDeclare
         RenderGraph::RGFrame frame(device, &pools.Persistent, &pools.Transient, &pools.Ring);
         frame.BeginFrame(0);
 
-        RenderGraph::RGTexture color = frame.ImportPersistentTexture("MSAA.Color", ColorTargetDesc(4));
+        RenderGraph::RGTexture color = frame.ImportPersistentTexture("MSAA.Color", SampledMsaaColorDesc());
         RenderGraph::RGTexture depth = frame.ImportPersistentTexture("MSAA.Depth", DepthTargetDesc(4));
 
         rs.BeginWorldDrawFrame();
@@ -5781,8 +5801,10 @@ TEST(RenderPipelineDeclareTests, MsaaOnKeepsViewColorMultisampledAndWorldDeclare
             if (rec.Tex == color.Id && !rec.IsDepth)
                 worldColor = &rec;
         ASSERT_NE(worldColor, nullptr) << "world attaches the multisampled caller color";
-        EXPECT_EQ(worldColor->Resolve, sceneColor.Id)
-            << "the world declares AttachColorResolve into SceneColor";
+        EXPECT_EQ(worldColor->Resolve, RenderGraph::kInvalidId) << "no attachment resolve";
+        EXPECT_NE(ColorResolvePassOf(frame.Graph(), worldColor->Pass, color.Id, sceneColor.Id),
+                  RenderGraph::kInvalidId)
+            << "a resolve pass after the world resolves the color into SceneColor";
 
         const auto effIt = fr->Textures.find({viewId, "View.EffectiveColor"});
         ASSERT_NE(effIt, fr->Textures.end());
@@ -8469,7 +8491,7 @@ TEST(RenderPipelineDeclareTests, MsaaPairAndBlendLoadForViewColorTargets)
         FramePools pools(f.Device);
         RenderGraph::RGFrame frame(f.Device, &pools.Persistent, &pools.Transient, &pools.Ring);
         frame.BeginFrame(0);
-        RenderGraph::RGTexture color = frame.ImportPersistentTexture("PT.Color", ColorTargetDesc(4));
+        RenderGraph::RGTexture color = frame.ImportPersistentTexture("PT.Color", SampledMsaaColorDesc());
         RenderGraph::RGTexture depth = frame.ImportPersistentTexture("PT.Depth", DepthTargetDesc(4));
 
         f.Rs->BeginWorldDrawFrame();
@@ -8486,15 +8508,18 @@ TEST(RenderPipelineDeclareTests, MsaaPairAndBlendLoadForViewColorTargets)
         ASSERT_NE(fr, nullptr);
         const RenderGraph::RGTexture sceneColor = fr->Textures.at({f.View, "View.Resolve"});
 
-        // The overlay's attachment: the MSAA caller color with Load (blend)
-        // and a resolve into SceneColor. The world's rec on the same texture
-        // clears — distinguish by Load op.
+        // The overlay's attachment: the MSAA caller color with Load (blend),
+        // resolved into SceneColor by the pass after it. The world's rec on
+        // the same texture clears — distinguish by Load op.
         const RenderGraph::RGAttachmentRec* overlayRec = nullptr;
         for (const auto& rec : frame.Attachments())
             if (rec.Tex == color.Id && !rec.IsDepth && rec.Ops.Load == RenderGraph::RGLoadOp::Load)
                 overlayRec = &rec;
         ASSERT_NE(overlayRec, nullptr) << "blend => Load on the overlay attachment";
-        EXPECT_EQ(overlayRec->Resolve, sceneColor.Id) << "MSAA pair into the pipeline resolve";
+        EXPECT_EQ(overlayRec->Resolve, RenderGraph::kInvalidId) << "no attachment resolve";
+        EXPECT_NE(ColorResolvePassOf(frame.Graph(), overlayRec->Pass, color.Id, sceneColor.Id),
+                  RenderGraph::kInvalidId)
+            << "MSAA pair into the pipeline resolve, after the overlay";
         EXPECT_TRUE(frame.Graph().HasReadAccess(overlayRec->Pass, color.Id))
             << "Load derives the read that chains from the world's write";
 

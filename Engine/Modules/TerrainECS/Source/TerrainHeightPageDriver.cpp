@@ -19,13 +19,9 @@
 namespace GameEngine::TerrainECS
 {
 
-namespace
-{
-
 using Hashing::HashCombine;
 
-// The generated lattice of a noise or flat tiled terrain: its tile grid and the tile fill's noise.
-PageStreaming::GeneratedHeightLattice MakeGeneratedLattice(const TiledTerrainData& tiled)
+PageStreaming::GeneratedHeightLattice MakeGeneratedHeightLattice(const TiledTerrainData& tiled)
 {
     PageStreaming::GeneratedHeightLattice lattice;
     lattice.Source = tiled.Config.Base.Source == Components::TerrainBaseSource::ProceduralNoise
@@ -41,7 +37,7 @@ PageStreaming::GeneratedHeightLattice MakeGeneratedLattice(const TiledTerrainDat
     return lattice;
 }
 
-uint64 GeneratedIdentity(const PageStreaming::GeneratedHeightLattice& lattice)
+uint64 GeneratedHeightIdentity(const PageStreaming::GeneratedHeightLattice& lattice)
 {
     uint64 hash = HashCombine(0x9E3779B97F4A7C15ull, static_cast<uint64>(lattice.Source));
     hash = HashCombine(hash, std::bit_cast<uint32>(lattice.TerrainOriginX));
@@ -51,8 +47,6 @@ uint64 GeneratedIdentity(const PageStreaming::GeneratedHeightLattice& lattice)
     hash = HashCombine(hash, lattice.TilesX);
     return HashCombine(hash, lattice.TilesZ);
 }
-
-} // namespace
 
 void RequestTiledTerrainHeightPages(TerrainService& service, const Rendering::IDevice& device,
                                     TiledTerrainData& tiled, const TiledRenderExtent& extent,
@@ -78,8 +72,8 @@ void RequestTiledTerrainHeightPages(TerrainService& service, const Rendering::ID
     PageStreaming::GeneratedHeightLattice lattice;
     if (generated)
     {
-        lattice = MakeGeneratedLattice(tiled);
-        request.SourceIdentity = GeneratedIdentity(lattice);
+        lattice = MakeGeneratedHeightLattice(tiled);
+        request.SourceIdentity = GeneratedHeightIdentity(lattice);
         samplesX = lattice.TilesX * (lattice.TileSamples - 1u) + 1u;
         samplesZ = lattice.TilesZ * (lattice.TileSamples - 1u) + 1u;
     }

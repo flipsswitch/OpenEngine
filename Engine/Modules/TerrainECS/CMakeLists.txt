@@ -40,6 +40,10 @@ add_library(TerrainECS OBJECT
     Source/Systems/TerrainWorldHooks.cpp
     Source/Systems/TerrainModifierSystem.cpp
     Source/Systems/TerrainModifierPageOverlay.cpp
+    Source/Systems/TerrainModifierSurfacePages.cpp
+    Source/TerrainSurfacePageBaker.cpp
+    Source/TerrainSurfacePageDriver.cpp
+    Source/TerrainSurfaceStore.cpp
     Source/TileStreamingManager.cpp
     Source/TerrainModifierComponents.cpp
     Source/TerrainColorMap.cpp

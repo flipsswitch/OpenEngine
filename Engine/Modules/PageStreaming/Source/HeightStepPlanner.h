@@ -28,11 +28,12 @@ int32 SixteenBitStepExponent(float32 range);
 /// values under its footprint (the bound PagePyramidBuilder gives the page's base), never finer
 /// than kHeightStepExponentMin, and never so fine that the largest height passes kHeightIntegerMax
 /// steps. The steps are a function of the samples and the grid alone, so every cook of one source
-/// chooses them alike. Memory: two floats per level-0 page.
+/// chooses them alike. A store of several faces pushes them one after another, each in row-major
+/// order, and a level's pages are every face's. Memory: two floats per level-0 page.
 class HeightStepPlanner
 {
 public:
-    HeightStepPlanner(uint32 samplesX, uint32 samplesZ);
+    HeightStepPlanner(uint32 samplesX, uint32 samplesZ, uint32 faces);
 
     void Push(std::span<const float32> samples);
 
@@ -46,8 +47,11 @@ private:
     std::vector<float32> m_PageMin; // per level-0 page: the lowest sample under its footprint
     std::vector<float32> m_PageMax;
     float32 m_Magnitude = 0.0f; // the largest |sample|
-    uint32 m_X = 0;             // where the next pushed sample lands
+    uint32 m_Faces = 0;
+    std::size_t m_FacePages = 0; // level-0 pages of one face
+    uint32 m_X = 0;              // where the next pushed sample lands
     uint32 m_Z = 0;
+    uint32 m_Face = 0;
 };
 
 } // namespace GameEngine::PageStreaming
