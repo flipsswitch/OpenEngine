@@ -109,6 +109,8 @@ private:
         // Conform misses reported for this entity, so a scene that rebuilds every frame
         // warns when the count moves rather than once per frame.
         uint32 LoggedConformMisses = 0;
+        // A rebuild held on a pending BVH (HoldForPendingBvh): not marked built, so it runs again.
+        ConformHold Hold;
         // Same on-change contract for the station tilt ceiling and for spans
         // that stood too near vertical to keep a roll of their own.
         uint32 LoggedTiltClamps = 0;

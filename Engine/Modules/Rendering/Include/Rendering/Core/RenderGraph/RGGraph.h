@@ -12,6 +12,7 @@
 
 #include "Memory/Arena.h"
 #include "Rendering/Core/RenderGraph/RGBarrier.h"
+#include "Rendering/Core/RenderGraph/RGCrossFrameAccesses.h"
 #include "Rendering/Core/RenderGraph/RGTypes.h"
 
 #include <cstdint>
@@ -155,6 +156,25 @@ class RGGraph
     // layout, so barrier generation transitions from that real layout rather than
     // Undefined (import-at-tracked-layout; no execute-time staleness).
     void MarkImported(RGResourceId id, RGImageLayout initialLayout);
+
+    // The device handle behind an imported resource, which BuildSubmissionPlan uses to order this
+    // frame's accesses on one physical queue after earlier frames' conflicting accesses on the
+    // others (RGCrossFrameAccesses). A resource without one is not ordered across frames.
+    void SetCrossFramePhysical(RGResourceId id, uint64_t physical);
+
+    // The value each physical queue's timeline has signaled. BuildSubmissionPlan drops a cross-frame
+    // wait on a value at or below it: that work has finished.
+    void SetCompletedTimelineValues(const uint64_t (&completedValues)[kQueueCount])
+    {
+        m_CrossFrameAccesses.SetCompleted(completedValues);
+    }
+
+    // Forgets the cross-frame accesses: the timeline values they name belong to semaphores that
+    // died with the device.
+    void ResetCrossFrameAccesses() { m_CrossFrameAccesses.Clear(); }
+
+    // The accesses earlier plans recorded, which the next plan orders its own accesses after.
+    const RGCrossFrameAccesses& CrossFrameAccesses() const { return m_CrossFrameAccesses; }
 
     // Contractual final layout for an exported texture (UI-sampled outputs):
     // GenerateBarriers emits one trailing transition after the resource's last
@@ -343,6 +363,7 @@ class RGGraph
     std::vector<uint8_t> m_ResourceImported;       // parallel; 1 if imported with a known layout
     std::vector<RGImageLayout> m_ResourceInitLayout; // parallel; layout for imported resources
     std::vector<RGImageLayout> m_ResourceExportLayout; // parallel; Undefined = no export contract
+    std::vector<uint64_t> m_ResourceCrossFramePhysical; // parallel; 0 = not ordered across frames
     std::vector<RGPassRec> m_Passes;
     std::vector<RGAccessRecord> m_Accesses;
     std::vector<std::pair<RGPassId, RGPassId>> m_OrderingEdges; // {before, after}
@@ -413,6 +434,15 @@ class RGGraph
     // overlap in flight, so per-frame values would collide with frame N-1's
     // still-pending signals.
     uint64_t m_QueueTimelineNext[kQueueCount] = {0, 0, 0};
+    // Accesses earlier frames' plans made to imported physicals, by queue; deliberately NOT reset
+    // per frame for the same reason.
+    RGCrossFrameAccesses m_CrossFrameAccesses;
+    // Adds to `consumer` the waits an access of this plan to an imported physical needs, so it runs
+    // after the conflicting accesses earlier frames made on other queues.
+    void AddCrossFrameWaits(RGSubmission& consumer, RGResourceId resource, bool writes);
+    // Records an access of this plan to an imported physical, made by `submission`, for the next
+    // frames' plans.
+    void RecordCrossFrameAccess(RGResourceId resource, const RGSubmission& submission, bool writes);
 
     // Submission plan (per frame).
     std::vector<RGSubmission> m_Submissions;

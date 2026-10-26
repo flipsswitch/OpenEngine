@@ -1,11 +1,14 @@
 // PageStoreTests: the terrain page store (Engine/Modules/PageStreaming) as pure oracles. The store
-// round trip, the apron's bit-equality under the store-wide quantum, the sparse resolve, the
-// incremental re-cook, the lattice-preserving tent, the generated provider's level 0 against the
-// terrain's own tile fill, the cook key, the encoding rule, the terrain container, the PNG limit
-// and the asynchronous loader.
+// round trip, the apron's bit-equality under the per-level step (a 32-bit page beside a 16-bit one
+// included), the present-page index against the dense lookup, the sparse resolve, the incremental
+// re-cook, the lattice-preserving tent, the generated provider's level 0 against the terrain's own
+// tile fill, the cook key, the step rule, the terrain container, the PNG limit, the
+// asynchronous loader, and the surface kinds' codecs and filters. HeightPageCodec.h,
+// HeightStepPlanner.h, PagePyramidBuilder.h and PageStoreSerialization.h are the module's private
+// headers: the height encoding, the step rule, the builder the surface stores are made with, and
+// the byte layout a refusal test patches.
 
 #include "PageStreaming/GeneratedHeightPageProvider.h"
-#include "PageStreaming/HeightPageCodec.h"
 #include "PageStreaming/HeightPageCooker.h"
 #include "PageStreaming/HeightPageOverlay.h"
 #include "PageStreaming/HeightStoreCache.h"
@@ -18,14 +21,22 @@
 #include "PageStreaming/PageTableEntry.h"
 #include "PageStreaming/TerrainPageContainer.h"
 
+#include "HeightPageCodec.h"
+#include "HeightStepPlanner.h"
+#include "PagePyramidBuilder.h"
+#include "PageStoreSerialization.h"
+
 #include "Assets/AssetIOService.h"
 #include "CBTTerrain/CBTLayout.h"
 #include "Components/Terrain/Terrain.h"
 #include "JobSystem/WorkStealingThreadPool.h"
+#include "Mathematics/VectorOps.h"
 #include "Terrain/Heightfield.h"
 #include "TerrainECS/PageLevelRule.h"
 #include "TerrainECS/TerrainService.h"
 #include "TestTempDir.h"
+#include "Types/Color.h"
+#include "Types/Fnv1a.h"
 
 #include <gtest/gtest.h>
 
@@ -40,6 +51,7 @@
 #include <future>
 #include <limits>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 using namespace GameEngine;
@@ -156,6 +168,138 @@ std::vector<float32> LevelGrid(const PageStoreReader& reader, uint8 level)
     return grid;
 }
 
+// A store of `format` and `filter` built from its level-0 samples (row-major, PageTexelBytes(format)
+// bytes each), pushed in bands of 50 rows as a cook pushes them.
+void BuildSurfaceStore(const std::filesystem::path& file, PageFieldFormat format, PageFieldFilter filter, uint32 samplesX,
+                       uint32 samplesZ, const std::vector<uint8>& level0)
+{
+    PageStoreHeader header;
+    header.Format = format;
+    header.Filter = filter;
+    header.SamplesX = samplesX;
+    header.SamplesZ = samplesZ;
+    PageStoreWriter writer;
+    ASSERT_EQ(writer.Create(file, MakePageStoreLayout(header)), "");
+    PagePyramidBuilder builder(writer, false, nullptr);
+    const std::size_t rowBytes = static_cast<std::size_t>(samplesX) * PageTexelBytes(format);
+    constexpr uint32 kBandRows = 50u;
+    for (uint32 row = 0; row < samplesZ; row += kBandRows)
+        builder.PushLevel0Rows(level0.data() + row * rowBytes, std::min(kBandRows, samplesZ - row));
+    ASSERT_TRUE(builder.Finish());
+    ASSERT_EQ(writer.Finish(), "");
+}
+
+std::vector<uint8> SurfacePage(const PageStoreReader& reader, const PageAddress& address)
+{
+    const PageFieldFormat format = reader.Layout().Header.Format;
+    const uint32 stride = PageStrideTexels(format);
+    std::vector<uint8> samples(static_cast<std::size_t>(stride) * stride * PageTexelBytes(format));
+    EXPECT_TRUE(reader.ReadPageSamples(address, samples));
+    return samples;
+}
+
+// The owned samples of every page of a surface store's level, as one row-major grid of the level.
+std::vector<uint8> SurfaceLevelGrid(const PageStoreReader& reader, uint8 level)
+{
+    const PageStoreLevel& shape = reader.Layout().Levels[level];
+    const PageFieldFormat format = reader.Layout().Header.Format;
+    const uint32 stride = PageStrideTexels(format);
+    const uint32 apron = (stride - kPageOwnedSamples) / 2u;
+    const uint32 texel = PageTexelBytes(format);
+    std::vector<uint8> grid(static_cast<std::size_t>(shape.SamplesX) * shape.SamplesZ * texel);
+    for (uint32 pz = 0; pz < shape.PagesZ; ++pz)
+        for (uint32 px = 0; px < shape.PagesX; ++px)
+        {
+            const std::vector<uint8> page = SurfacePage(reader, PageAddress{0, level, px, pz});
+            for (uint32 r = 0; r < kPageOwnedSamples; ++r)
+                for (uint32 c = 0; c < kPageOwnedSamples; ++c)
+                {
+                    const uint32 x = px * kPageOwnedSamples + c;
+                    const uint32 z = pz * kPageOwnedSamples + r;
+                    if (x < shape.SamplesX && z < shape.SamplesZ)
+                        std::memcpy(&grid[(static_cast<std::size_t>(z) * shape.SamplesX + x) * texel],
+                                    &page[(static_cast<std::size_t>(r + apron) * stride + c + apron) * texel], texel);
+                }
+        }
+    return grid;
+}
+
+// The 16 bytes of block (bx, by) of a Bc5 page's stored bytes.
+std::vector<uint8> Bc5Block(const std::vector<uint8>& bytes, uint32 bx, uint32 by)
+{
+    const uint32 blocks = PageStrideTexels(PageFieldFormat::Bc5) / kPageBlockTexels;
+    const auto first = bytes.begin() + static_cast<std::ptrdiff_t>((by * blocks + bx) * kBc5BlockBytes);
+    return std::vector<uint8>(first, first + kBc5BlockBytes);
+}
+
+// The slope of a 30-degree flank, rise over run.
+const float32 kThirtyDegreeSlope = std::tan(30.0f * Mathematics::Pi / 180.0f);
+constexpr float32 kDegreesPerRadian = 180.0f / Mathematics::Pi;
+
+// A ridge along Z at x = 100 with 30-degree flanks, one unit between samples, edge-clamped to `width`.
+float32 RidgeHeight(int64 x, uint32 width)
+{
+    return -kThirtyDegreeSlope * static_cast<float32>(std::abs(static_cast<int64>(ClampSample(x, width)) - 100));
+}
+
+// A copy of `source` beside it, with the `bytes` low bytes of `value` at `offset`.
+std::filesystem::path PatchedCopy(const std::filesystem::path& source, std::size_t offset, uint32 value, std::size_t bytes)
+{
+    std::vector<uint8> data = FileBytes(source);
+    std::memcpy(data.data() + offset, &value, bytes);
+    std::filesystem::path copy = source;
+    copy.replace_filename("patched" + source.extension().string());
+    std::ofstream(copy, std::ios::binary | std::ios::trunc)
+        .write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+    return copy;
+}
+
+// Four splat weights summing to 255 at every sample, from a hash of its position.
+std::vector<uint8> SplatWeights(uint32 width, uint32 height)
+{
+    std::vector<uint8> weights(static_cast<std::size_t>(width) * height * 4u);
+    for (uint32 z = 0; z < height; ++z)
+        for (uint32 x = 0; x < width; ++x)
+        {
+            const uint32 hash = (x * 73856093u) ^ (z * 19349663u) ^ ((x + z) * 83492791u);
+            uint8* texel = &weights[(static_cast<std::size_t>(z) * width + x) * 4u];
+            texel[0] = static_cast<uint8>(hash % 256u);
+            texel[1] = static_cast<uint8>((hash >> 8) % (256u - texel[0]));
+            texel[2] = static_cast<uint8>((hash >> 16) % (256u - texel[0] - texel[1]));
+            texel[3] = static_cast<uint8>(255u - texel[0] - texel[1] - texel[2]);
+        }
+    return weights;
+}
+
+// The weights tent at coarser sample (i, j) of a level of `width` x `height` four-weight samples:
+// [1 2 1] x [1 2 1] around (2i, 2j), edges clamped; each weight the floor of its share of 255, the
+// remainder on the largest (the lowest channel on a tie).
+std::array<uint8, 4> ReferenceWeightsTent(const std::vector<uint8>& grid, uint32 width, uint32 height, uint32 i, uint32 j)
+{
+    std::array<uint32, 4> sums{};
+    for (int32 dz = -1; dz <= 1; ++dz)
+        for (int32 dx = -1; dx <= 1; ++dx)
+        {
+            const uint32 weight = static_cast<uint32>((2 - std::abs(dz)) * (2 - std::abs(dx)));
+            const uint32 x = ClampSample(2 * static_cast<int64>(i) + dx, width);
+            const uint32 z = ClampSample(2 * static_cast<int64>(j) + dz, height);
+            for (uint32 c = 0; c < 4u; ++c)
+                sums[c] += weight * grid[(static_cast<std::size_t>(z) * width + x) * 4u + c];
+        }
+    const uint32 total = sums[0] + sums[1] + sums[2] + sums[3];
+    std::array<uint8, 4> out{};
+    uint32 assigned = 0;
+    uint32 largest = 0;
+    for (uint32 c = 0; c < 4u; ++c)
+    {
+        out[c] = static_cast<uint8>(sums[c] * 255u / total);
+        assigned += out[c];
+        largest = sums[c] > sums[largest] ? c : largest;
+    }
+    out[largest] = static_cast<uint8>(out[largest] + 255u - assigned);
+    return out;
+}
+
 } // namespace
 
 // ---- Format ----------------------------------------------------------------------------------------
@@ -184,43 +328,185 @@ TEST(PageStoreFormatTest, PyramidOfTheSixtyByFifteenKilometerDemHasTheNotesPageC
     EXPECT_EQ(levels.back().FirstEntry + 1u, 1173760u);
 }
 
-TEST(PageStoreFormatTest, AbsoluteHeightsAreSixteenBitUpToSixHundredFiftyFiveMetersOfRange)
+TEST(PageStoreFormatTest, SixteenBitStepIsTheFinestPowerOfTwoWhoseWordsHoldTheRange)
 {
-    const HeightEncoding narrow = ChooseAbsoluteHeightEncoding(171.6f, 304.3f); // the DEM's outer terrain
-    EXPECT_EQ(narrow.Format, PageFieldFormat::HeightR16);
-    EXPECT_LE(narrow.Quantum.Step, kHeightStepMax);
-    EXPECT_NEAR(narrow.Quantum.Step, 0.00203f, 0.00001f);
-    EXPECT_EQ(ChooseAbsoluteHeightEncoding(0.0f, 655.0f).Format, PageFieldFormat::HeightR16);
-    EXPECT_EQ(ChooseAbsoluteHeightEncoding(0.0f, 656.0f).Format, PageFieldFormat::HeightR32F);
-    // The boundary itself: 655.35 m is 65535 steps of 1 cm, 655.36 m is not.
-    const HeightEncoding boundary = ChooseAbsoluteHeightEncoding(0.0f, 655.35f);
-    EXPECT_EQ(boundary.Format, PageFieldFormat::HeightR16);
-    EXPECT_LE(boundary.Quantum.Step, kHeightStepMax);
-    EXPECT_EQ(ChooseAbsoluteHeightEncoding(0.0f, 655.36f).Format, PageFieldFormat::HeightR32F);
-    EXPECT_EQ(ChooseAbsoluteHeightEncoding(-4000.0f, 4000.0f).Format, PageFieldFormat::HeightR32F);
-    const HeightEncoding flat = ChooseAbsoluteHeightEncoding(12.0f, 12.0f);
-    EXPECT_EQ(flat.Format, PageFieldFormat::HeightR16);
-    EXPECT_GT(flat.Quantum.Step, 0.0f);
+    // The DEM's outer terrain spans 132.7 m in one page: 2 mm steps (2^-9) need 67,942 words, 4 mm
+    // (2^-8) fit.
+    EXPECT_EQ(SixteenBitStepExponent(304.3f - 171.6f), -8);
+    // The boundary: 65,533 steps fit (two are left for the base's floor and the top's rounding).
+    EXPECT_EQ(SixteenBitStepExponent(std::ldexp(65533.0f, -10)), -10);
+    EXPECT_EQ(SixteenBitStepExponent(std::ldexp(65534.0f, -10)), -9);
+    // Never finer than 2^-20, flat or not.
+    EXPECT_EQ(SixteenBitStepExponent(0.0f), kHeightStepExponentMin);
+    EXPECT_EQ(SixteenBitStepExponent(1.0e-6f), kHeightStepExponentMin);
+    // Earth's relief in one page needs a 50 cm step (2^-1).
+    EXPECT_EQ(SixteenBitStepExponent(19900.0f), -1);
 }
 
-TEST(PageStoreFormatTest, NormalizedWordsDecodeToTodaysSixteenBitValues)
+TEST(PageStoreFormatTest, NormalizedStepKeepsTodaysSixteenBitValues)
 {
-    const HeightQuantum quantum = NormalizedHeightEncoding().Quantum;
     constexpr float32 kInv65535 = 1.0f / 65535.0f; // Terrain/Heightfield.cpp's decode
     for (uint32 word = 0; word <= 65535u; word += 97u)
     {
         const float32 today = static_cast<float32>(word) * kInv65535;
-        EXPECT_EQ(std::bit_cast<uint32>(quantum.Decode(static_cast<uint16>(word))), std::bit_cast<uint32>(today));
-        EXPECT_EQ(quantum.Encode(today), word);
+        EXPECT_EQ(std::bit_cast<uint32>(QuantizeHeight(today, kNormalizedHeightStep)), std::bit_cast<uint32>(today));
     }
 }
 
-TEST_F(PageStoreTest, StoreRoundTripsHeaderIndexAndPagesInMortonOrder)
+TEST(PageStoreFormatTest, AThirtyTwoBitPageBesideASixteenBitOneSharesItsApronIntegers)
+{
+    // Two level-0 pages side by side at a 2^-6 m step: the left one rolls gently, the right one
+    // holds a 2 km tower in its owned samples, so its range passes 65,535 steps and it stores
+    // 32-bit integers. The columns each stores of the other decode bit for bit alike.
+    PageStoreHeader header;
+    header.SamplesX = 2u * kPageOwnedSamples + 1u;
+    header.SamplesZ = kPageOwnedSamples;
+    header.StepPerLevel.fill(std::ldexp(1.0f, -6));
+    const float32 step = header.StepPerLevel[0];
+    const auto height = [&](int64 x, int64 z) {
+        const uint32 cx = ClampSample(x, header.SamplesX);
+        const uint32 cz = ClampSample(z, header.SamplesZ);
+        const bool tower = cx >= 180u && cx < 200u && cz >= 40u && cz < 60u;
+        return QuantizeHeight(Relief(cx, cz) + (tower ? 2000.0f : 0.0f), step);
+    };
+    std::array<EncodedPage, 2> encoded;
+    std::array<PageIndexEntry, 2> entries;
+    std::array<std::vector<float32>, 2> decoded;
+    for (uint32 page = 0; page < 2u; ++page)
+    {
+        std::vector<float32> samples(kPageSampleCount);
+        float32 lowest = std::numeric_limits<float32>::max();
+        float32 highest = std::numeric_limits<float32>::lowest();
+        for (uint32 r = 0; r < kPageStrideSamples; ++r)
+        {
+            for (uint32 c = 0; c < kPageStrideSamples; ++c)
+            {
+                const float32 value = height(int64(page) * kPageOwnedSamples + c - 1, int64(r) - 1);
+                samples[static_cast<std::size_t>(r) * kPageStrideSamples + c] = value;
+                if (r >= 1u && c >= 1u)
+                {
+                    lowest = std::min(lowest, value);
+                    highest = std::max(highest, value);
+                }
+            }
+        }
+        EncodeHeightPage(header, 0, samples, lowest, highest, encoded[page]);
+        entries[page].MinWord = encoded[page].MinWord;
+        entries[page].MaxWord = encoded[page].MaxWord;
+        entries[page].Flags = encoded[page].Flags;
+        decoded[page].resize(kPageSampleCount);
+        DecodeHeightPage(header, 0, entries[page], encoded[page].Bytes, decoded[page]);
+        for (std::size_t i = 0; i < kPageSampleCount; ++i)
+            ASSERT_EQ(decoded[page][i], samples[i]) << page << " " << i;
+    }
+    ASSERT_FALSE(entries[0].HasWideWords());
+    ASSERT_TRUE(entries[1].HasWideWords());
+    EXPECT_EQ(encoded[0].Bytes.size(), PageStoredBytes(PageFieldFormat::HeightSteps, false));
+    EXPECT_EQ(encoded[1].Bytes.size(), PageStoredBytes(PageFieldFormat::HeightSteps, true));
+    for (uint32 r = 0; r < kPageStrideSamples; ++r)
+    {
+        const std::size_t row = static_cast<std::size_t>(r) * kPageStrideSamples;
+        EXPECT_EQ(std::bit_cast<uint32>(decoded[0][row + kPageStrideSamples - 1u]),
+                  std::bit_cast<uint32>(decoded[1][row + 1u]));
+        EXPECT_EQ(std::bit_cast<uint32>(decoded[0][row + kPageStrideSamples - 2u]), std::bit_cast<uint32>(decoded[1][row]));
+    }
+}
+
+TEST(PageStoreFormatTest, APageWhoseIntegersSpan65535StepsStaysSixteenBitAndOneMoreStoresThirtyTwo)
+{
+    // At a step of 1, a page of zeros with one sample at 65,535 fits its words exactly (the top word
+    // is 65,535 above MinWord 0); one at 65,536 does not fit, so the page stores 32-bit integers.
+    PageStoreHeader header;
+    header.SamplesX = kPageOwnedSamples;
+    header.SamplesZ = kPageOwnedSamples;
+    header.StepPerLevel.fill(1.0f);
+    for (const float32 top : {65535.0f, 65536.0f})
+    {
+        std::vector<float32> samples(kPageSampleCount, 0.0f);
+        samples[kPageStrideSamples + 1u] = top;
+        EncodedPage encoded;
+        EncodeHeightPage(header, 0, samples, 0.0f, top, encoded);
+        PageIndexEntry entry;
+        entry.MinWord = encoded.MinWord;
+        entry.MaxWord = encoded.MaxWord;
+        entry.Flags = encoded.Flags;
+        EXPECT_EQ(entry.MinWord, 0);
+        EXPECT_EQ(entry.HasWideWords(), top == 65536.0f) << top;
+        EXPECT_EQ(encoded.Bytes.size(), PageStoredBytes(PageFieldFormat::HeightSteps, top == 65536.0f)) << top;
+        std::vector<float32> decoded(kPageSampleCount);
+        DecodeHeightPage(header, 0, entry, encoded.Bytes, decoded);
+        EXPECT_EQ(decoded, samples) << top;
+    }
+}
+
+TEST(PageStoreFormatTest, PresentPageLookupEqualsTheDenseLookup)
+{
+    // The 60 x 15 km synthetic keeps every page present: 1,173,760 entries of 33 bytes (38.7 MB).
+    PageStoreHeader synthetic;
+    synthetic.SamplesX = 240000u;
+    synthetic.SamplesZ = 60000u;
+    const PageStoreLayout full = MakePageStoreLayout(synthetic);
+    ASSERT_EQ(full.Entries.size(), 1173760u);
+    EXPECT_EQ(full.Entries.size() * kPageIndexEntryBytes, 38734080u);
+    for (uint8 level = 0; level < full.Levels.size(); ++level)
+    {
+        const PageStoreLevel& shape = full.Levels[level];
+        for (uint32 z = 0; z < shape.PagesZ; z += 7u)
+        {
+            for (uint32 x = 0; x < shape.PagesX; x += 13u)
+            {
+                const PageIndexEntry* entry = full.FindPresent(PageAddress{0, level, x, z});
+                ASSERT_NE(entry, nullptr) << int(level) << " " << x << "," << z;
+                ASSERT_EQ(entry->Morton, PageMortonCode(x, z));
+            }
+        }
+        EXPECT_FALSE(full.Contains(PageAddress{0, level, shape.PagesX, 0}));
+    }
+
+    // A sparse store: the lookup finds exactly the pages the dense presence marks, and an absent
+    // page resolves to the ancestor the dense walk finds.
+    PageStoreHeader header;
+    header.SamplesX = 3000u;
+    header.SamplesZ = 1700u;
+    const std::vector<PageStoreLevel> levels = BuildPageStoreLevels(header.SamplesX, header.SamplesZ);
+    std::vector<uint8> present(static_cast<std::size_t>(DensePageCount(levels)));
+    for (std::size_t i = 0; i < present.size(); ++i)
+        present[i] = static_cast<uint8>(((i * 2654435761u) >> 7u) % 3u != 0u);
+    present.back() = 1u;
+    const PageStoreLayout sparse = MakePageStoreLayout(header, present);
+    const auto densePresent = [&](const PageAddress& a) {
+        const PageStoreLevel& shape = levels[a.Level];
+        return present[static_cast<std::size_t>(shape.FirstEntry + static_cast<uint64>(a.Z) * shape.PagesX + a.X)] != 0;
+    };
+    std::size_t found = 0;
+    for (uint8 level = 0; level < levels.size(); ++level)
+    {
+        for (uint32 z = 0; z < levels[level].PagesZ; ++z)
+        {
+            for (uint32 x = 0; x < levels[level].PagesX; ++x)
+            {
+                const PageAddress address{0, level, x, z};
+                ASSERT_EQ(sparse.FindPresent(address) != nullptr, densePresent(address))
+                    << int(level) << " " << x << "," << z;
+                found += densePresent(address) ? 1u : 0u;
+                PageAddress walk = address;
+                while (!densePresent(walk))
+                    walk = walk.Parent();
+                ASSERT_EQ(sparse.ResolvePresent(address), walk);
+            }
+        }
+    }
+    EXPECT_EQ(found, sparse.Entries.size());
+}
+
+TEST_F(PageStoreTest, StoreRoundTripsHeaderIndexAndPagesWithTheIndexInMortonOrder)
 {
     PageStoreHeader header;
-    header.Format = PageFieldFormat::HeightR32F;
     header.SamplesX = 300;
     header.SamplesZ = 200;
+    header.StepPerLevel.fill(0.5f);
+    header.StepPerLevel[1] = 0.25f;
+    header.ReferenceRadius = 6371000.0; // Earth's: samples stay h = r - R, so the pages decode as written
     header.Key = 0x1234567890ABCDEFull;
     const std::filesystem::path file = m_Dir / "roundtrip.gepage";
     PageStoreWriter writer;
@@ -238,7 +524,7 @@ TEST_F(PageStoreTest, StoreRoundTripsHeaderIndexAndPagesInMortonOrder)
                 for (uint32 i = 0; i < kPageSampleCount; ++i)
                     samples[i] = static_cast<float32>(level * 1000000u + pz * 10000u + px * 100u) + 0.5f * i;
                 EncodedPage page;
-                EncodeHeightPage(header, samples, samples.front(), samples.back(), page);
+                EncodeHeightPage(header, level, samples, samples.front(), samples.back(), page);
                 ASSERT_TRUE(writer.WritePage(PageAddress{0, level, px, pz}, page));
                 written.push_back(std::move(samples));
             }
@@ -247,9 +533,13 @@ TEST_F(PageStoreTest, StoreRoundTripsHeaderIndexAndPagesInMortonOrder)
     ASSERT_EQ(writer.Finish(), "");
 
     PageStoreReader reader;
-    ASSERT_EQ(reader.Open(file), "");
+    ASSERT_EQ(reader.Open(file, PageFieldKind::Height), "");
     EXPECT_EQ(reader.Layout().Header.Key, header.Key);
     EXPECT_EQ(reader.Layout().Header.SamplesX, 300u);
+    EXPECT_EQ(reader.Layout().Header.StepPerLevel, writer.Layout().Header.StepPerLevel);
+    EXPECT_EQ(reader.Layout().Header.StepPerLevel[1], 0.25f);
+    EXPECT_EQ(reader.Layout().Header.StepPerLevel[3], 0.0f); // past the store's three levels
+    EXPECT_EQ(reader.Layout().Header.ReferenceRadius, 6371000.0);
     ASSERT_EQ(reader.Layout().Levels.size(), 3u); // 300 x 200 -> 151 x 101 -> 76 x 51
     std::size_t next = 0;
     for (uint8 level = 0; level < reader.Layout().Levels.size(); ++level)
@@ -258,13 +548,67 @@ TEST_F(PageStoreTest, StoreRoundTripsHeaderIndexAndPagesInMortonOrder)
                 EXPECT_EQ(PageSamples(reader, PageAddress{0, level, px, pz}), written[next++]);
     EXPECT_EQ(std::filesystem::file_size(file), reader.Layout().TotalBytes());
 
-    // Level 0 (3 x 2 pages) lies in Morton order: (0,0) (1,0) (0,1) (1,1) (2,0) (2,1).
+    // Level 0's index (3 x 2 pages) lists it in Morton order: (0,0) (1,0) (0,1) (1,1) (2,0) (2,1);
+    // its pages lie in the order they were written, row by row.
+    const PageStoreRange& level0 = reader.Layout().Ranges[0];
+    ASSERT_EQ(level0.Count, 6u);
+    const std::array<uint64, 6> morton{PageMortonCode(0, 0), PageMortonCode(1, 0), PageMortonCode(0, 1),
+                                       PageMortonCode(1, 1), PageMortonCode(2, 0), PageMortonCode(2, 1)};
+    for (std::size_t i = 0; i < morton.size(); ++i)
+        EXPECT_EQ(reader.Layout().Entries[level0.First + i].Morton, morton[i]);
     const auto offset = [&](uint32 x, uint32 z) { return reader.Layout().FindPresent(PageAddress{0, 0, x, z})->Offset; };
+    EXPECT_EQ(offset(0, 0), reader.Layout().DataOffset());
     EXPECT_LT(offset(0, 0), offset(1, 0));
-    EXPECT_LT(offset(1, 0), offset(0, 1));
-    EXPECT_LT(offset(0, 1), offset(1, 1));
-    EXPECT_LT(offset(1, 1), offset(2, 0));
-    EXPECT_LT(offset(2, 0), offset(2, 1));
+    EXPECT_LT(offset(1, 0), offset(2, 0));
+    EXPECT_LT(offset(2, 0), offset(0, 1));
+}
+
+TEST_F(PageStoreTest, EachFaceOfATwoFaceStoreReadsItsOwnPagesAndResolvesWithinItself)
+{
+    // Two faces of 300 x 200 samples (levels of 3 x 2, 2 x 1 and 1 x 1 pages). Face 0 holds every
+    // page; face 1 lacks level 0's (1, 1), which resolves to its own face's level-1 page. Every page
+    // stores its face, level and position, so a page read from the wrong face or level shows.
+    PageStoreHeader header;
+    header.SamplesX = 300;
+    header.SamplesZ = 200;
+    header.FaceCount = 2;
+    header.StepPerLevel.fill(1.0f);
+    const std::vector<PageStoreLevel> levels = BuildPageStoreLevels(header.SamplesX, header.SamplesZ);
+    const uint64 perFace = DensePageCount(levels);
+    std::vector<uint8> present(static_cast<std::size_t>(2u * perFace), 1u);
+    present[static_cast<std::size_t>(perFace + 1u * levels[0].PagesX + 1u)] = 0u;
+    const auto valueOf = [](const PageAddress& a) {
+        return static_cast<float32>(a.Face * 1000u + a.Level * 100u + a.Z * 10u + a.X);
+    };
+    const std::filesystem::path file = m_Dir / "faces.gepage";
+    PageStoreWriter writer;
+    ASSERT_EQ(writer.Create(file, MakePageStoreLayout(header, present)), "");
+    std::vector<PageAddress> written;
+    for (uint8 face = 0; face < 2u; ++face)
+        for (uint8 level = 0; level < levels.size(); ++level)
+            for (uint32 pz = 0; pz < levels[level].PagesZ; ++pz)
+                for (uint32 px = 0; px < levels[level].PagesX; ++px)
+                {
+                    const PageAddress address{face, level, px, pz};
+                    if (!writer.Layout().FindPresent(address))
+                        continue;
+                    const std::vector<float32> samples(kPageSampleCount, valueOf(address));
+                    EncodedPage page;
+                    EncodeHeightPage(header, level, samples, samples.front(), samples.front(), page);
+                    ASSERT_TRUE(writer.WritePage(address, page));
+                    written.push_back(address);
+                }
+    ASSERT_EQ(writer.Finish(), "");
+    ASSERT_EQ(written.size(), 2u * perFace - 1u);
+
+    PageStoreReader reader;
+    ASSERT_EQ(reader.Open(file, PageFieldKind::Height), "");
+    for (const PageAddress& address : written)
+        EXPECT_EQ(PageSamples(reader, address).front(), valueOf(address))
+            << int(address.Face) << " " << int(address.Level) << " " << address.X << "," << address.Z;
+    EXPECT_EQ(reader.Layout().FindPresent(PageAddress{1, 0, 1, 1}), nullptr);
+    EXPECT_EQ(reader.Layout().ResolvePresent(PageAddress{1, 0, 1, 1}), (PageAddress{1, 1, 0, 0}));
+    EXPECT_EQ(reader.Layout().ResolvePresent(PageAddress{0, 0, 1, 1}), (PageAddress{0, 0, 1, 1}));
 }
 
 TEST_F(PageStoreTest, TruncatedOrForeignFilesAreRefusedWithAReason)
@@ -272,12 +616,13 @@ TEST_F(PageStoreTest, TruncatedOrForeignFilesAreRefusedWithAReason)
     PageStoreHeader header;
     header.SamplesX = 200;
     header.SamplesZ = 200;
+    header.StepPerLevel.fill(1.0f);
     const std::filesystem::path file = m_Dir / "short.gepage";
     PageStoreWriter writer;
     ASSERT_EQ(writer.Create(file, MakePageStoreLayout(header)), "");
     std::vector<float32> samples(kPageSampleCount, 1.0f);
     EncodedPage page;
-    EncodeHeightPage(header, samples, 1.0f, 1.0f, page);
+    EncodeHeightPage(header, 0, samples, 1.0f, 1.0f, page);
     for (uint8 level = 0; level < writer.Layout().Levels.size(); ++level)
         for (uint32 pz = 0; pz < writer.Layout().Levels[level].PagesZ; ++pz)
             for (uint32 px = 0; px < writer.Layout().Levels[level].PagesX; ++px)
@@ -286,12 +631,38 @@ TEST_F(PageStoreTest, TruncatedOrForeignFilesAreRefusedWithAReason)
 
     std::filesystem::resize_file(file, std::filesystem::file_size(file) - 1u);
     PageStoreReader reader;
-    EXPECT_NE(reader.Open(file).find("outside the store"), std::string::npos);
+    EXPECT_NE(reader.Open(file, PageFieldKind::Height).find("outside the store"), std::string::npos);
     EXPECT_FALSE(reader.IsOpen());
 
     const std::filesystem::path foreign = m_Dir / "foreign.gepage";
     std::ofstream(foreign, std::ios::binary) << std::string(64, 'x');
-    EXPECT_NE(reader.Open(foreign).find("not a page store"), std::string::npos);
+    EXPECT_NE(reader.Open(foreign, PageFieldKind::Height).find("not a page store"), std::string::npos);
+
+    // A store of format 1 is refused with the way to cook it again.
+    const std::filesystem::path older = m_Dir / "older.gepage";
+    {
+        std::vector<uint8> bytes = FileBytes(file);
+        const uint32 version = 1u;
+        std::memcpy(bytes.data() + 4u, &version, sizeof(version));
+        std::ofstream(older, std::ios::binary)
+            .write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    }
+    const std::string refusal = reader.Open(older, PageFieldKind::Height);
+    EXPECT_NE(refusal.find("the page store is format 1 and this engine reads format 2"), std::string::npos) << refusal;
+    EXPECT_NE(refusal.find("export the game again"), std::string::npos) << refusal;
+    EXPECT_FALSE(reader.IsOpen());
+
+    // A level step past 2^100 can decode heights past float32: refused.
+    const std::filesystem::path coarse = m_Dir / "coarse.gepage";
+    {
+        std::vector<uint8> bytes = FileBytes(file);
+        const float32 step = std::ldexp(1.0f, kHeightStepExponentMax + 1);
+        std::memcpy(bytes.data() + kPageStoreHeaderBytes + kPageStoreLevelBytes - sizeof(float32), &step, sizeof(step));
+        std::ofstream(coarse, std::ios::binary)
+            .write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    }
+    const std::string coarseRefusal = reader.Open(coarse, PageFieldKind::Height);
+    EXPECT_NE(coarseRefusal.find("height step is past 2^100"), std::string::npos) << coarseRefusal;
 }
 
 TEST_F(PageStoreTest, AbsentPagesResolveToTheirNearestPresentAncestor)
@@ -299,6 +670,7 @@ TEST_F(PageStoreTest, AbsentPagesResolveToTheirNearestPresentAncestor)
     PageStoreHeader header;
     header.SamplesX = 300;
     header.SamplesZ = 300;
+    header.StepPerLevel.fill(1.0f);
     std::vector<uint8> present(MakePageStoreLayout(header).Entries.size(), 1u);
     // Level 0 is 3 x 3 pages; the near field covers all but the center page, and level 1 (2 x 2)
     // lacks the page above that center, so the center resolves two levels up.
@@ -318,7 +690,7 @@ TEST_F(PageStoreTest, AbsentPagesResolveToTheirNearestPresentAncestor)
     ASSERT_EQ(writer.Create(file, layout), "");
     std::vector<float32> samples(kPageSampleCount, 7.0f);
     EncodedPage page;
-    EncodeHeightPage(header, samples, 7.0f, 7.0f, page);
+    EncodeHeightPage(header, 0, samples, 7.0f, 7.0f, page);
     EXPECT_FALSE(writer.WritePage(PageAddress{0, 0, 1, 1}, page));
     for (uint8 level = 0; level < layout.Levels.size(); ++level)
         for (uint32 pz = 0; pz < layout.Levels[level].PagesZ; ++pz)
@@ -330,18 +702,18 @@ TEST_F(PageStoreTest, AbsentPagesResolveToTheirNearestPresentAncestor)
     ASSERT_EQ(writer.Finish(), "");
 
     PageStoreReader reader;
-    ASSERT_EQ(reader.Open(file), "");
+    ASSERT_EQ(reader.Open(file, PageFieldKind::Height), "");
     std::vector<float32> out(kPageSampleCount);
     EXPECT_FALSE(reader.ReadHeightPage(PageAddress{0, 0, 1, 1}, out));
     EXPECT_EQ(reader.Layout().ResolvePresent(PageAddress{0, 0, 1, 1}), (PageAddress{0, 2, 0, 0}));
     // Absent pages take no bytes: 9 + 4 + 1 pages less the two absent ones.
     EXPECT_EQ(reader.Layout().TotalBytes(),
-              reader.Layout().DataOffset() + 12u * PageStoredBytes(PageFieldFormat::HeightR32F));
+              reader.Layout().DataOffset() + 12u * PageStoredBytes(PageFieldFormat::HeightSteps, false));
 }
 
 // ---- Cooking ---------------------------------------------------------------------------------------
 
-TEST_F(PageStoreTest, CookedLevelZeroIsTheSourceInTheStoreWideQuantumWithEdgeClampedAprons)
+TEST_F(PageStoreTest, CookedLevelZeroIsTheSourceInItsStepWithinHalfAStepWithEdgeClampedAprons)
 {
     constexpr uint32 kWidth = 300;
     constexpr uint32 kHeight = 260;
@@ -352,10 +724,12 @@ TEST_F(PageStoreTest, CookedLevelZeroIsTheSourceInTheStoreWideQuantumWithEdgeCla
     ASSERT_EQ(result.Error, "");
 
     PageStoreReader reader;
-    ASSERT_EQ(reader.Open(store), "");
+    ASSERT_EQ(reader.Open(store, PageFieldKind::Height), "");
     const PageStoreHeader& header = reader.Layout().Header;
-    ASSERT_EQ(header.Format, PageFieldFormat::HeightR16);
     EXPECT_EQ(header.Units, PageHeightUnits::Absolute);
+    EXPECT_GT(header.StepPerLevel[0], 0.0f);
+    for (const PageIndexEntry& entry : reader.Layout().Entries)
+        EXPECT_FALSE(entry.HasWideWords());
     EXPECT_EQ(result.PagesWritten, reader.Layout().Entries.size());
 
     const std::vector<float32> input = ReadR32(source, kWidth, kHeight);
@@ -370,10 +744,11 @@ TEST_F(PageStoreTest, CookedLevelZeroIsTheSourceInTheStoreWideQuantumWithEdgeCla
                 {
                     const uint32 x = ClampSample(static_cast<int64>(px) * kPageOwnedSamples + c - 1, kWidth);
                     const uint32 z = ClampSample(static_cast<int64>(pz) * kPageOwnedSamples + r - 1, kHeight);
-                    const float32 expected =
-                        header.Quantum.Decode(header.Quantum.Encode(input[static_cast<std::size_t>(z) * kWidth + x]));
-                    ASSERT_EQ(page[static_cast<std::size_t>(r) * kPageStrideSamples + c], expected)
+                    const float32 sourceHeight = input[static_cast<std::size_t>(z) * kWidth + x];
+                    const float32 stored = page[static_cast<std::size_t>(r) * kPageStrideSamples + c];
+                    ASSERT_EQ(stored, QuantizeHeight(sourceHeight, header.StepPerLevel[0]))
                         << "page " << px << "," << pz << " stride " << c << "," << r;
+                    ASSERT_LE(std::abs(stored - sourceHeight), 0.5f * header.StepPerLevel[0]);
                 }
             }
         }
@@ -382,8 +757,8 @@ TEST_F(PageStoreTest, CookedLevelZeroIsTheSourceInTheStoreWideQuantumWithEdgeCla
 
 TEST_F(PageStoreTest, ApronSamplesAreBitEqualToTheNeighborsOwnedSamplesAtEveryLevel)
 {
-    // A relief whose pages each span a different height range: under a per-page quantum the same
-    // sample would encode to different words in the two pages that store it.
+    // A relief whose pages each span a different height range, so each page has its own base: a
+    // sample two pages store is one integer above two bases and decodes alike in both.
     constexpr uint32 kWidth = 520;
     constexpr uint32 kHeight = 390;
     const std::filesystem::path source = m_Dir / "apron.r32";
@@ -392,8 +767,7 @@ TEST_F(PageStoreTest, ApronSamplesAreBitEqualToTheNeighborsOwnedSamplesAtEveryLe
     ASSERT_EQ(Cook(source, kWidth, kHeight, store).Error, "");
 
     PageStoreReader reader;
-    ASSERT_EQ(reader.Open(store), "");
-    ASSERT_EQ(reader.Layout().Header.Format, PageFieldFormat::HeightR16);
+    ASSERT_EQ(reader.Open(store, PageFieldKind::Height), "");
     std::size_t pairs = 0;
     for (uint8 level = 0; level < reader.Layout().Levels.size(); ++level)
     {
@@ -443,8 +817,8 @@ TEST_F(PageStoreTest, CoarserLevelsAreTheTentOfTheStoredLevelBelow)
     ASSERT_EQ(Cook(source, kWidth, kHeight, store).Error, "");
 
     PageStoreReader reader;
-    ASSERT_EQ(reader.Open(store), "");
-    const HeightQuantum& quantum = reader.Layout().Header.Quantum;
+    ASSERT_EQ(reader.Open(store, PageFieldKind::Height), "");
+    const PageStoreHeader& header = reader.Layout().Header;
     for (uint8 level = 1; level < reader.Layout().Levels.size(); ++level)
     {
         const PageStoreLevel& finer = reader.Layout().Levels[level - 1u];
@@ -464,8 +838,11 @@ TEST_F(PageStoreTest, CoarserLevelsAreTheTentOfTheStoredLevelBelow)
                 };
                 const float32 tent = 0.25f * across(2 * int64(j) - 1) + 0.5f * across(2 * int64(j)) +
                                      0.25f * across(2 * int64(j) + 1);
-                ASSERT_EQ(grid[static_cast<std::size_t>(j) * coarser.SamplesX + i], quantum.Decode(quantum.Encode(tent)))
+                // Each level is the tent of the level below in its own step, within half a step of it.
+                const float32 stored = grid[static_cast<std::size_t>(j) * coarser.SamplesX + i];
+                ASSERT_EQ(stored, QuantizeHeight(tent, header.StepPerLevel[level]))
                     << "level " << int(level) << " sample " << i << "," << j;
+                ASSERT_LE(std::abs(stored - tent), 0.5f * header.StepPerLevel[level]);
             }
         }
     }
@@ -473,8 +850,8 @@ TEST_F(PageStoreTest, CoarserLevelsAreTheTentOfTheStoredLevelBelow)
 
 TEST_F(PageStoreTest, TentKeepsEveryCoarserSampleAtItsLatticePosition)
 {
-    // A plane through the origin with a 1,600 m range (32-bit store, no quantization): the tent of
-    // a plane centered on a sample is the sample, so level N sample j is the plane at level-0
+    // A plane through the origin with integer heights, on every level's lattice: the tent of a
+    // plane centered on a sample is the sample, so level N sample j is the plane at level-0
     // sample j * 2^N wherever the tent stays inside the field. A cell-centered average would sit
     // half a finer cell off.
     constexpr uint32 kWidth = 401;
@@ -486,8 +863,7 @@ TEST_F(PageStoreTest, TentKeepsEveryCoarserSampleAtItsLatticePosition)
     ASSERT_EQ(Cook(source, kWidth, kHeight, store).Error, "");
 
     PageStoreReader reader;
-    ASSERT_EQ(reader.Open(store), "");
-    ASSERT_EQ(reader.Layout().Header.Format, PageFieldFormat::HeightR32F);
+    ASSERT_EQ(reader.Open(store, PageFieldKind::Height), "");
     for (uint8 level = 1; level < reader.Layout().Levels.size(); ++level)
     {
         const PageStoreLevel& shape = reader.Layout().Levels[level];
@@ -501,7 +877,7 @@ TEST_F(PageStoreTest, TentKeepsEveryCoarserSampleAtItsLatticePosition)
     }
 }
 
-TEST_F(PageStoreTest, PageBoundsHoldTheLevelZeroSurfaceUnderTheirFootprintIncludingTheSharedEdge)
+TEST_F(PageStoreTest, PageBoundsHoldTheLevelZeroSurfaceUnderTheirFootprintAndEveryStoredSample)
 {
     constexpr uint32 kWidth = 520;
     constexpr uint32 kHeight = 390;
@@ -511,7 +887,7 @@ TEST_F(PageStoreTest, PageBoundsHoldTheLevelZeroSurfaceUnderTheirFootprintInclud
     ASSERT_EQ(Cook(source, kWidth, kHeight, store).Error, "");
 
     PageStoreReader reader;
-    ASSERT_EQ(reader.Open(store), "");
+    ASSERT_EQ(reader.Open(store, PageFieldKind::Height), "");
     const PageStoreHeader& header = reader.Layout().Header;
     const std::vector<float32> level0 = LevelGrid(reader, 0);
     for (uint8 level = 0; level < reader.Layout().Levels.size(); ++level)
@@ -534,13 +910,18 @@ TEST_F(PageStoreTest, PageBoundsHoldTheLevelZeroSurfaceUnderTheirFootprintInclud
                 ASSERT_NE(entry, nullptr);
                 if (px * span > kWidth - 1u || pz * span > kHeight - 1u)
                     continue; // a page wholly past the field's edge holds edge samples only
+                // The bounds also hold every sample the page stores, apron included: the base of its
+                // words. At level 0 they are exactly the lowest and highest of both.
+                const std::vector<float32> page = PageSamples(reader, PageAddress{0, level, px, pz});
+                const float32 storedLow = std::min(lowest, *std::min_element(page.begin(), page.end()));
+                const float32 storedHigh = std::max(highest, *std::max_element(page.begin(), page.end()));
                 if (level == 0)
                 {
-                    EXPECT_EQ(DecodeHeightWord(header, entry->MinWord), lowest);
-                    EXPECT_EQ(DecodeHeightWord(header, entry->MaxWord), highest);
+                    EXPECT_EQ(DecodeHeightWord(header, level, entry->MinWord), storedLow);
+                    EXPECT_EQ(DecodeHeightWord(header, level, entry->MaxWord), storedHigh);
                 }
-                EXPECT_LE(DecodeHeightWord(header, entry->MinWord), lowest) << int(level) << " " << px << "," << pz;
-                EXPECT_GE(DecodeHeightWord(header, entry->MaxWord), highest) << int(level) << " " << px << "," << pz;
+                EXPECT_LE(DecodeHeightWord(header, level, entry->MinWord), storedLow) << int(level) << " " << px << "," << pz;
+                EXPECT_GE(DecodeHeightWord(header, level, entry->MaxWord), storedHigh) << int(level) << " " << px << "," << pz;
             }
         }
     }
@@ -557,7 +938,7 @@ TEST_F(PageStoreTest, RecookOfAnEditedSourceRewritesOnlyThePagesWhoseBytesChange
     PageStoreLayout layoutA;
     {
         PageStoreReader reader;
-        ASSERT_EQ(reader.Open(storeA), "");
+        ASSERT_EQ(reader.Open(storeA, PageFieldKind::Height), "");
         layoutA = reader.Layout();
     }
 
@@ -579,7 +960,7 @@ TEST_F(PageStoreTest, RecookOfAnEditedSourceRewritesOnlyThePagesWhoseBytesChange
     EXPECT_FALSE(full.Patched);
 
     PageStoreReader reader;
-    ASSERT_EQ(reader.Open(fresh), "");
+    ASSERT_EQ(reader.Open(fresh, PageFieldKind::Height), "");
     uint64 changed = 0;
     for (std::size_t i = 0; i < layoutA.Entries.size(); ++i)
         changed += layoutA.Entries[i].Hash != reader.Layout().Entries[i].Hash ? 1u : 0u;
@@ -608,26 +989,481 @@ TEST_F(PageStoreTest, ARangeChangeCooksAFreshStoreAndLeavesThePreviousOne)
     EXPECT_TRUE(std::filesystem::exists(storeA));
 }
 
-TEST_F(PageStoreTest, RangesPastSixHundredFiftyFiveMetersCookToThirtyTwoBitFloat)
+TEST_F(PageStoreTest, LevelStepsComeFromTheDataAndOnlyTheSteepestPagesStoreThirtyTwoBits)
 {
-    const std::filesystem::path wide = m_Dir / "wide.r32";
-    WriteR32(wide, 150, 140, [](uint32 x, uint32 z) { return static_cast<float32>(x) * 5.0f + static_cast<float32>(z); });
-    const std::filesystem::path wideStore = m_Dir / "wide.gepage";
-    ASSERT_EQ(Cook(wide, 150, 140, wideStore).Error, "");
-    PageStoreReader reader;
-    ASSERT_EQ(reader.Open(wideStore), "");
-    EXPECT_EQ(reader.Layout().Header.Format, PageFieldFormat::HeightR32F);
-    // 32-bit pages hold the source exactly.
-    const std::vector<float32> page = PageSamples(reader, PageAddress{0, 0, 0, 0});
-    EXPECT_EQ(page[static_cast<std::size_t>(11) * kPageStrideSamples + 21], 20.0f * 5.0f + 10.0f);
+    // 11 x 11 level-0 pages of the relief, one with a 3 km tower. Every level of two or more pages
+    // (121, 36, 9 and 4) may let one page escape, so it keeps the step the relief alone gets and the
+    // tower's page alone stores 32-bit integers. The one-page top level has no page to spare: its
+    // step coarsens until the tower fits 16 bits.
+    constexpr uint32 kSide = 11u * kPageOwnedSamples;
+    const auto tower = [](uint32 x, uint32 z) {
+        const bool inside = x >= 650u && x < 670u && z >= 650u && z < 670u;
+        return Relief(x, z) + (inside ? 3000.0f : 0.0f);
+    };
+    const std::filesystem::path plain = m_Dir / "plain.r32";
+    const std::filesystem::path towered = m_Dir / "tower.r32";
+    WriteR32(plain, kSide, kSide, Relief);
+    WriteR32(towered, kSide, kSide, tower);
+    const std::filesystem::path plainStore = m_Dir / "plain.gepage";
+    const std::filesystem::path towerStore = m_Dir / "tower.gepage";
+    ASSERT_EQ(Cook(plain, kSide, kSide, plainStore).Error, "");
+    ASSERT_EQ(Cook(towered, kSide, kSide, towerStore).Error, "");
 
-    const std::filesystem::path narrow = m_Dir / "narrow.r32";
-    WriteR32(narrow, 150, 140, [](uint32 x, uint32 z) { return static_cast<float32>(x) * 3.0f + static_cast<float32>(z); });
-    const std::filesystem::path narrowStore = m_Dir / "narrow.gepage";
-    ASSERT_EQ(Cook(narrow, 150, 140, narrowStore).Error, "");
-    ASSERT_EQ(reader.Open(narrowStore), "");
-    EXPECT_EQ(reader.Layout().Header.Format, PageFieldFormat::HeightR16);
-    EXPECT_LE(reader.Layout().Header.Quantum.Step, kHeightStepMax);
+    PageStoreReader plainReader;
+    PageStoreReader reader;
+    ASSERT_EQ(plainReader.Open(plainStore, PageFieldKind::Height), "");
+    ASSERT_EQ(reader.Open(towerStore, PageFieldKind::Height), "");
+    const PageStoreLayout& layout = reader.Layout();
+    ASSERT_EQ(layout.Levels[0].PagesX, 11u);
+    ASSERT_EQ(layout.Levels.size(), 5u);
+    for (uint8 level = 0; level < layout.Levels.size(); ++level)
+    {
+        const bool top = level + 1u == layout.Levels.size();
+        const float32 plainStep = plainReader.Layout().Header.StepPerLevel[level];
+        if (top)
+            EXPECT_GT(layout.Header.StepPerLevel[level], plainStep);
+        else
+            EXPECT_EQ(layout.Header.StepPerLevel[level], plainStep) << int(level);
+        const PageStoreRange& range = layout.Ranges[level];
+        uint64 wide = 0;
+        for (uint64 i = 0; i < range.Count; ++i)
+            wide += layout.Entries[range.First + i].HasWideWords() ? 1u : 0u;
+        EXPECT_EQ(wide, top ? 0u : 1u) << int(level);
+    }
+    EXPECT_TRUE(layout.FindPresent(PageAddress{0, 0, 5, 5})->HasWideWords());
+
+    // Every level-0 sample, the tower's page included, is within half a step of its source.
+    const std::vector<float32> grid = LevelGrid(reader, 0);
+    const float32 half = 0.5f * layout.Header.StepPerLevel[0];
+    for (uint32 z = 0; z < kSide; ++z)
+        for (uint32 x = 0; x < kSide; ++x)
+            ASSERT_LE(std::abs(grid[static_cast<std::size_t>(z) * kSide + x] - tower(x, z)), half) << x << "," << z;
+}
+
+TEST_F(PageStoreTest, AHeightStoreKeepsItsBytesWhenTheStoreCarriesSurfaceKinds)
+{
+    // A 3 x 3 page relief with a tower, so its levels hold 16-bit and 32-bit pages. The whole
+    // file's hash is the one the height-only store had: a height store is never cooked again.
+    constexpr uint32 kSide = 3u * kPageOwnedSamples;
+    const auto tower = [](uint32 x, uint32 z) {
+        const bool inside = x >= 150u && x < 170u && z >= 150u && z < 170u;
+        return Relief(x, z) + (inside ? 3000.0f : 0.0f);
+    };
+    const std::filesystem::path source = m_Dir / "identity.r32";
+    WriteR32(source, kSide, kSide - 7u, tower);
+    const std::filesystem::path store = m_Dir / "identity.gepage";
+    ASSERT_EQ(Cook(source, kSide, kSide - 7u, store).Error, "");
+    PageStoreReader reader;
+    ASSERT_EQ(reader.Open(store, PageFieldKind::Height), "");
+    EXPECT_TRUE(reader.Layout().FindPresent(PageAddress{0, 0, 1, 1})->HasWideWords());
+    EXPECT_FALSE(reader.Layout().FindPresent(PageAddress{0, 0, 0, 0})->HasWideWords());
+    const std::vector<uint8> bytes = FileBytes(store);
+    EXPECT_EQ(Hashing::Fnv1a64(bytes.data(), bytes.size()), 0xac1c78a7532c8722ull);
+}
+
+// ---- Surface kinds ---------------------------------------------------------------------------------
+
+TEST_F(PageStoreTest, ASplatStoreRoundTripsByteExactAtEveryLevel)
+{
+    // 300 x 270 weights: 3 x 3 pages, then 2 x 2, then one. Level 0 reads back as written; each
+    // coarser level is the weights tent of the level below as stored; every apron is the
+    // neighbor's sample, edge-clamped past the field.
+    constexpr uint32 kWidth = 300u;
+    constexpr uint32 kHeight = 270u;
+    const std::vector<uint8> weights = SplatWeights(kWidth, kHeight);
+    const std::filesystem::path file = m_Dir / "splat.gepage";
+    BuildSurfaceStore(file, PageFieldFormat::Rgba8, PageFieldFilter::WeightsTent, kWidth, kHeight, weights);
+    PageStoreReader reader;
+    ASSERT_EQ(reader.Open(file, PageFieldKind::Splat), "");
+    const PageStoreLayout& layout = reader.Layout();
+    ASSERT_EQ(layout.Levels.size(), 3u);
+    EXPECT_EQ(layout.StoredBytes(layout.Entries.front()), 67600u);
+
+    std::vector<uint8> expected = weights;
+    for (uint8 level = 0; level < layout.Levels.size(); ++level)
+    {
+        const PageStoreLevel& shape = layout.Levels[level];
+        if (level > 0)
+        {
+            const PageStoreLevel& finer = layout.Levels[level - 1u];
+            const std::vector<uint8> below = SurfaceLevelGrid(reader, static_cast<uint8>(level - 1u));
+            expected.assign(static_cast<std::size_t>(shape.SamplesX) * shape.SamplesZ * 4u, 0u);
+            for (uint32 j = 0; j < shape.SamplesZ; ++j)
+                for (uint32 i = 0; i < shape.SamplesX; ++i)
+                {
+                    const std::array<uint8, 4> texel = ReferenceWeightsTent(below, finer.SamplesX, finer.SamplesZ, i, j);
+                    std::memcpy(&expected[(static_cast<std::size_t>(j) * shape.SamplesX + i) * 4u], texel.data(), 4u);
+                }
+        }
+        for (uint32 pz = 0; pz < shape.PagesZ; ++pz)
+            for (uint32 px = 0; px < shape.PagesX; ++px)
+            {
+                const std::vector<uint8> page = SurfacePage(reader, PageAddress{0, level, px, pz});
+                for (uint32 r = 0; r < kPageStrideSamples; ++r)
+                    for (uint32 c = 0; c < kPageStrideSamples; ++c)
+                    {
+                        const uint32 x = ClampSample(static_cast<int64>(px) * kPageOwnedSamples + c - 1, shape.SamplesX);
+                        const uint32 z = ClampSample(static_cast<int64>(pz) * kPageOwnedSamples + r - 1, shape.SamplesZ);
+                        ASSERT_EQ(std::memcmp(&page[(static_cast<std::size_t>(r) * kPageStrideSamples + c) * 4u],
+                                              &expected[(static_cast<std::size_t>(z) * shape.SamplesX + x) * 4u], 4u),
+                                  0)
+                            << "level " << int(level) << " page " << px << "," << pz << " sample " << c << "," << r;
+                    }
+            }
+    }
+}
+
+TEST_F(PageStoreTest, TheWeightsTentKeepsEveryTexelsWeightsSummingTo255)
+{
+    constexpr uint32 kSide = 260u;
+    const std::filesystem::path file = m_Dir / "sum.gepage";
+    BuildSurfaceStore(file, PageFieldFormat::Rgba8, PageFieldFilter::WeightsTent, kSide, kSide, SplatWeights(kSide, kSide));
+    PageStoreReader reader;
+    ASSERT_EQ(reader.Open(file, PageFieldKind::Splat), "");
+    for (uint8 level = 1; level < reader.Layout().Levels.size(); ++level)
+    {
+        const PageStoreLevel& shape = reader.Layout().Levels[level];
+        for (uint32 pz = 0; pz < shape.PagesZ; ++pz)
+            for (uint32 px = 0; px < shape.PagesX; ++px)
+            {
+                const std::vector<uint8> page = SurfacePage(reader, PageAddress{0, level, px, pz});
+                for (std::size_t t = 0; t < page.size(); t += 4u)
+                    ASSERT_EQ(page[t] + page[t + 1u] + page[t + 2u] + page[t + 3u], 255)
+                        << "level " << int(level) << " texel " << t / 4u;
+            }
+    }
+}
+
+TEST_F(PageStoreTest, ABc5PagesApronBlockIsItsNeighborsEdgeBlockBitForBit)
+{
+    // 300 x 300 normals: 3 x 3 pages at level 0, 2 x 2 at level 1. A page stores its 128 samples and
+    // a 4-sample apron each side, so its block grid sits on the page origin and its last block holds
+    // the samples of the next page's first owned block.
+    constexpr uint32 kSide = 300u;
+    std::vector<uint8> normals(static_cast<std::size_t>(kSide) * kSide * 2u);
+    for (std::size_t i = 0; i < normals.size(); ++i)
+        normals[i] = static_cast<uint8>(64u + ((static_cast<uint32>(i) * 2654435761u) >> 25));
+    const std::filesystem::path file = m_Dir / "normal.gepage";
+    BuildSurfaceStore(file, PageFieldFormat::Bc5, PageFieldFilter::NormalTent, kSide, kSide, normals);
+    PageStoreReader reader;
+    ASSERT_EQ(reader.Open(file, PageFieldKind::Normal), "");
+    const PageStoreLayout& layout = reader.Layout();
+    EXPECT_EQ(layout.StoredBytes(layout.Entries.front()), 18496u);
+
+    // Page p's last block starts at sample 128p - apron + stride - 4; page p + 1 stores that sample
+    // at stride - 4 - 128, which must start a block of its own.
+    const uint32 stride = PageStrideTexels(PageFieldFormat::Bc5);
+    const uint32 blocks = stride / kPageBlockTexels;
+    const uint32 shared = stride - kPageBlockTexels - kPageOwnedSamples;
+    ASSERT_EQ(shared % kPageBlockTexels, 0u) << "the block grid is not on the page origin";
+    const uint32 sharedBlock = shared / kPageBlockTexels;
+    for (uint8 level = 0; level < 2u; ++level)
+    {
+        std::vector<uint8> page;
+        std::vector<uint8> right;
+        std::vector<uint8> below;
+        ASSERT_TRUE(reader.ReadPageBytes(PageAddress{0, level, 0, 0}, page));
+        ASSERT_TRUE(reader.ReadPageBytes(PageAddress{0, level, 1, 0}, right));
+        ASSERT_TRUE(reader.ReadPageBytes(PageAddress{0, level, 0, 1}, below));
+        for (uint32 b = 0; b < blocks; ++b)
+        {
+            EXPECT_EQ(Bc5Block(page, blocks - 1u, b), Bc5Block(right, sharedBlock, b)) << "level " << int(level) << " row " << b;
+            EXPECT_EQ(Bc5Block(page, b, blocks - 1u), Bc5Block(below, b, sharedBlock))
+                << "level " << int(level) << " column " << b;
+        }
+    }
+}
+
+TEST_F(PageStoreTest, ABc5PageHoldsTheSamplesAtItsOwnPositionsApronIncluded)
+{
+    // 300 x 300 normals, one value per 4 x 4 block of the field and another in each neighbor: BC5
+    // stores a constant block exactly, so stored sample c of page p is field sample 128p - 4 + c
+    // (edge-clamped) at every level-0 page. A window one sample off mixes two field blocks in its
+    // blocks and reads every sample from its neighbor's position.
+    constexpr uint32 kSide = 300u;
+    std::vector<uint8> normals(static_cast<std::size_t>(kSide) * kSide * 2u);
+    for (uint32 z = 0; z < kSide; ++z)
+        for (uint32 x = 0; x < kSide; ++x)
+        {
+            const uint32 blockX = x / kPageBlockTexels;
+            const uint32 blockZ = z / kPageBlockTexels;
+            uint8* texel = &normals[(static_cast<std::size_t>(z) * kSide + x) * 2u];
+            texel[0] = static_cast<uint8>(64u + (blockX * 7u + blockZ * 3u) % 128u);
+            texel[1] = static_cast<uint8>(64u + (blockX * 5u + blockZ * 11u) % 128u);
+        }
+    const std::filesystem::path file = m_Dir / "blocks.gepage";
+    BuildSurfaceStore(file, PageFieldFormat::Bc5, PageFieldFilter::NormalTent, kSide, kSide, normals);
+    PageStoreReader reader;
+    ASSERT_EQ(reader.Open(file, PageFieldKind::Normal), "");
+    const uint32 stride = PageStrideTexels(PageFieldFormat::Bc5);
+    const uint32 apron = (stride - kPageOwnedSamples) / 2u;
+    const PageStoreLevel& shape = reader.Layout().Levels[0];
+    for (uint32 pz = 0; pz < shape.PagesZ; ++pz)
+        for (uint32 px = 0; px < shape.PagesX; ++px)
+        {
+            const std::vector<uint8> page = SurfacePage(reader, PageAddress{0, 0, px, pz});
+            for (uint32 r = 0; r < stride; ++r)
+                for (uint32 c = 0; c < stride; ++c)
+                {
+                    const uint32 x = ClampSample(static_cast<int64>(px) * kPageOwnedSamples + c - apron, kSide);
+                    const uint32 z = ClampSample(static_cast<int64>(pz) * kPageOwnedSamples + r - apron, kSide);
+                    ASSERT_EQ(std::memcmp(&page[(static_cast<std::size_t>(r) * stride + c) * 2u],
+                                          &normals[(static_cast<std::size_t>(z) * kSide + x) * 2u], 2u),
+                              0)
+                        << "page " << px << "," << pz << " sample " << c << "," << r;
+                }
+        }
+}
+
+TEST_F(PageStoreTest, TheNormalTentKeepsAThirtyDegreeSlopeThatTheNormalOfAveragedHeightsFlattens)
+{
+    // A ridge along Z at x = 100 with 30-degree flanks, one unit between samples. Level 0 holds the
+    // central-difference normals of its heights. Coarser sample 51 covers finer samples 101 to 103,
+    // all on the flank, so the tent of their normals is the 30-degree normal. The normal of the
+    // averaged heights there is 26.8 degrees: coarser sample 50's height has the ridge in it.
+    constexpr uint32 kWidth = 200u;
+    constexpr uint32 kHeight = 130u;
+    std::vector<uint8> normals(static_cast<std::size_t>(kWidth) * kHeight * 2u);
+    for (uint32 z = 0; z < kHeight; ++z)
+        for (uint32 x = 0; x < kWidth; ++x)
+        {
+            const float32 dhdx = 0.5f * (RidgeHeight(static_cast<int64>(x) + 1, kWidth) - RidgeHeight(static_cast<int64>(x) - 1, kWidth));
+            uint8* texel = &normals[(static_cast<std::size_t>(z) * kWidth + x) * 2u];
+            texel[0] = static_cast<uint8>(std::lround((-dhdx / std::sqrt(1.0f + dhdx * dhdx) * 0.5f + 0.5f) * 255.0f));
+            texel[1] = 128u;
+        }
+    const std::filesystem::path file = m_Dir / "ridge.gepage";
+    BuildSurfaceStore(file, PageFieldFormat::Bc5, PageFieldFilter::NormalTent, kWidth, kHeight, normals);
+    PageStoreReader reader;
+    ASSERT_EQ(reader.Open(file, PageFieldKind::Normal), "");
+    ASSERT_EQ(reader.Layout().Levels.size(), 2u);
+
+    const std::vector<uint8> level1 = SurfaceLevelGrid(reader, 1);
+    const uint32 width1 = reader.Layout().Levels[1].SamplesX;
+    const float32 x = static_cast<float32>(level1[(static_cast<std::size_t>(30) * width1 + 51u) * 2u]) / 255.0f * 2.0f - 1.0f;
+    const float32 degrees = std::asin(std::abs(x)) * kDegreesPerRadian;
+    EXPECT_NEAR(degrees, 30.0f, 0.5f);
+
+    // The method the tent replaces: tent the heights, then difference the coarser heights 50 and 52
+    // (finer samples 99 to 101 and 103 to 105), four units apart.
+    float32 coarse[2] = {};
+    for (uint32 n = 0; n < 2u; ++n)
+    {
+        const int64 center = 100 + 4 * static_cast<int64>(n);
+        coarse[n] = 0.25f * RidgeHeight(center - 1, kWidth) + 0.5f * RidgeHeight(center, kWidth) +
+                    0.25f * RidgeHeight(center + 1, kWidth);
+    }
+    const float32 averagedDegrees = std::atan(std::abs(coarse[1] - coarse[0]) / 4.0f) * kDegreesPerRadian;
+    EXPECT_GT(std::abs(degrees - averagedDegrees), 2.0f) << averagedDegrees;
+}
+
+TEST_F(PageStoreTest, TheNormalTentRenormalizesTheUnitNormalsOfAFootprintThatMixesSlopes)
+{
+    // A 60-degree flank for x <= 100, flat past it. Coarser sample 50 covers finer samples 99 and
+    // 100 on the flank (weights 1 and 2) and 101 on the flat (weight 1): the tent of the unit
+    // normals, renormalized, tilts 46.1 degrees (47.8 after BC5); a tent of the stored bytes tilts
+    // 40.3 (38.0 after BC5).
+    constexpr uint32 kWidth = 200u;
+    constexpr uint32 kHeight = 130u;
+    const uint8 flankX = static_cast<uint8>(std::lround((-std::sin(60.0f / kDegreesPerRadian) * 0.5f + 0.5f) * 255.0f));
+    std::vector<uint8> normals(static_cast<std::size_t>(kWidth) * kHeight * 2u, 128u);
+    for (uint32 z = 0; z < kHeight; ++z)
+        for (uint32 x = 0; x <= 100u; ++x)
+            normals[(static_cast<std::size_t>(z) * kWidth + x) * 2u] = flankX;
+    const std::filesystem::path file = m_Dir / "mixed.gepage";
+    BuildSurfaceStore(file, PageFieldFormat::Bc5, PageFieldFilter::NormalTent, kWidth, kHeight, normals);
+    PageStoreReader reader;
+    ASSERT_EQ(reader.Open(file, PageFieldKind::Normal), "");
+    ASSERT_EQ(reader.Layout().Levels.size(), 2u);
+    const std::vector<uint8> level1 = SurfaceLevelGrid(reader, 1);
+    const uint32 width1 = reader.Layout().Levels[1].SamplesX;
+    const float32 x = static_cast<float32>(level1[(static_cast<std::size_t>(30) * width1 + 50u) * 2u]) / 255.0f * 2.0f - 1.0f;
+    const float32 degrees = std::asin(std::abs(x)) * kDegreesPerRadian;
+    EXPECT_GT(degrees, 43.0f);
+    EXPECT_LT(degrees, 51.0f);
+}
+
+TEST_F(PageStoreTest, ThePremultipliedTentOfAWrittenTexelBesideAnUnwrittenOneIsTheHalfMix)
+{
+    // Written columns (a linear color at weight 1, stored sRGB-encoded) alternate with unwritten
+    // ones (zero). Every coarser sample's footprint is half written: its color is half the linear
+    // color at half the weight, which the ground reads as the half mix.
+    constexpr uint32 kWidth = 200u;
+    constexpr uint32 kHeight = 130u;
+    const ColorLinear color(0.6f, 0.3f, 0.1f, 1.0f);
+    const ColorSRGB encoded = color.ToSRGB();
+    std::vector<uint8> texels(static_cast<std::size_t>(kWidth) * kHeight * 4u, 0u);
+    for (uint32 z = 0; z < kHeight; ++z)
+        for (uint32 x = 1; x < kWidth; x += 2u)
+        {
+            uint8* texel = &texels[(static_cast<std::size_t>(z) * kWidth + x) * 4u];
+            texel[0] = static_cast<uint8>(std::lround(encoded.r * 255.0f));
+            texel[1] = static_cast<uint8>(std::lround(encoded.g * 255.0f));
+            texel[2] = static_cast<uint8>(std::lround(encoded.b * 255.0f));
+            texel[3] = 255u;
+        }
+    const std::filesystem::path file = m_Dir / "color.gepage";
+    BuildSurfaceStore(file, PageFieldFormat::Rgba8Srgb, PageFieldFilter::PremultipliedTent, kWidth, kHeight, texels);
+    PageStoreReader reader;
+    ASSERT_EQ(reader.Open(file, PageFieldKind::Color), "");
+    const std::vector<uint8> level1 = SurfaceLevelGrid(reader, 1);
+    const uint32 width1 = reader.Layout().Levels[1].SamplesX;
+    const uint8* texel = &level1[(static_cast<std::size_t>(30) * width1 + 40u) * 4u];
+    const ColorLinear mixed = ColorSRGB::FromSRGB255(texel[0], texel[1], texel[2], texel[3]).ToLinear();
+    EXPECT_NEAR(mixed.a, 0.5f, 1.0f / 255.0f);
+    EXPECT_NEAR(mixed.r, 0.5f * color.r, 0.005f);
+    EXPECT_NEAR(mixed.g, 0.5f * color.g, 0.005f);
+    EXPECT_NEAR(mixed.b, 0.5f * color.b, 0.005f);
+}
+
+TEST_F(PageStoreTest, AStoreOrContainerOfAKindFormatOrFilterThisEngineDoesNotKnowIsRefusedWithTheFix)
+{
+    constexpr uint32 kSide = 130u;
+    const std::filesystem::path store = m_Dir / "grass.gepage";
+    BuildSurfaceStore(store, PageFieldFormat::Rg8, PageFieldFilter::Tent, kSide, kSide,
+                      std::vector<uint8>(static_cast<std::size_t>(kSide) * kSide * 2u, 255u));
+    const std::filesystem::path container = m_Dir / "grass.geterrain";
+    const TerrainContainerField field{PageFieldKind::GrassControl, store};
+    ASSERT_EQ(WriteTerrainContainer(container, {&field, 1}), "");
+    PageStoreReader reader;
+    ASSERT_EQ(reader.Open(store, PageFieldKind::GrassControl), "");
+    ASSERT_EQ(OpenTerrainContainerField(container, PageFieldKind::GrassControl, reader), "");
+    EXPECT_NE(OpenTerrainContainerField(container, PageFieldKind::Splat, reader).find("has no splat field"),
+              std::string::npos);
+
+    const std::string fix = "the page store was written by a newer engine or is damaged: update the engine, or "
+                            "export the game again (in the editor, opening the scene cooks the terrain again)";
+    // The store's format byte follows its magic and version, and its filter byte follows the format;
+    // the container's first kind follows its magic, version and field count.
+    const std::string format = reader.Open(PatchedCopy(store, 8u, 9u, 1u), PageFieldKind::GrassControl);
+    const std::string filter = reader.Open(PatchedCopy(store, 9u, 9u, 1u), PageFieldKind::GrassControl);
+    const std::string kind =
+        OpenTerrainContainerField(PatchedCopy(container, 12u, 99u, 4u), PageFieldKind::GrassControl, reader);
+    EXPECT_NE(format.find(fix), std::string::npos) << format;
+    EXPECT_NE(filter.find(fix), std::string::npos) << filter;
+    EXPECT_NE(kind.find(fix), std::string::npos) << kind;
+}
+
+TEST_F(PageStoreTest, AContainerFieldWhoseStoreIsOfAnotherKindIsRefused)
+{
+    // A whole height store under the splat kind in the field directory.
+    const std::filesystem::path source = m_Dir / "c.r32";
+    WriteR32(source, 260, 200, Relief);
+    const std::filesystem::path store = m_Dir / "c.gepage";
+    ASSERT_EQ(Cook(source, 260, 200, store).Error, "");
+    const std::filesystem::path container = m_Dir / "relabeled.geterrain";
+    const TerrainContainerField field{PageFieldKind::Splat, store};
+    ASSERT_EQ(WriteTerrainContainer(container, {&field, 1}), "");
+    PageStoreReader reader;
+    const std::string refusal = OpenTerrainContainerField(container, PageFieldKind::Splat, reader);
+    EXPECT_NE(refusal.find("the page store is not a splat store"), std::string::npos) << refusal;
+    EXPECT_FALSE(reader.IsOpen());
+}
+
+namespace
+{
+
+// A store of `Kind`, written in its own format and filter, whose format and filter bytes are then
+// changed to `Format` and `Filter`.
+struct PageStoreRelabel
+{
+    PageFieldKind Kind;
+    PageFieldFormat WrittenFormat;
+    PageFieldFilter WrittenFilter;
+    PageFieldFormat Format;
+    PageFieldFilter Filter;
+};
+
+class PageStoreRelabelTest : public PageStoreTest, public ::testing::WithParamInterface<PageStoreRelabel>
+{
+};
+
+} // namespace
+
+TEST_P(PageStoreRelabelTest, AStoreWhoseFormatOrFilterByteChangedIsRefused)
+{
+    // Every relabel leaves the store unfit for its kind: refused as a bare store of that kind and in
+    // a container.
+    const PageStoreRelabel relabel = GetParam();
+    constexpr uint32 kSide = 260u;
+    const std::vector<uint8> weights = SplatWeights(kSide, kSide);
+    std::vector<uint8> level0(static_cast<std::size_t>(kSide) * kSide * PageTexelBytes(relabel.WrittenFormat));
+    for (std::size_t i = 0; i < level0.size(); ++i)
+        level0[i] = weights[i % weights.size()];
+    const std::filesystem::path store = m_Dir / "written.gepage";
+    BuildSurfaceStore(store, relabel.WrittenFormat, relabel.WrittenFilter, kSide, kSide, level0);
+    // The format byte follows the store's magic and version; the filter byte follows the format.
+    const uint32 bytes = static_cast<uint32>(relabel.Format) | static_cast<uint32>(relabel.Filter) << 8u;
+    const std::filesystem::path relabeled = PatchedCopy(store, 8u, bytes, 2u);
+
+    PageStoreReader reader;
+    EXPECT_NE(reader.Open(relabeled, relabel.Kind), "");
+    EXPECT_FALSE(reader.IsOpen());
+    const std::filesystem::path container = m_Dir / "relabeled.geterrain";
+    const TerrainContainerField field{relabel.Kind, relabeled};
+    ASSERT_EQ(WriteTerrainContainer(container, {&field, 1}), "");
+    EXPECT_NE(OpenTerrainContainerField(container, relabel.Kind, reader), "");
+    EXPECT_FALSE(reader.IsOpen());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    RelabeledSurfaceStores, PageStoreRelabelTest,
+    ::testing::Values(
+        PageStoreRelabel{PageFieldKind::Splat, PageFieldFormat::Rgba8, PageFieldFilter::WeightsTent, PageFieldFormat::Rgba8,
+                         PageFieldFilter::Tent},
+        PageStoreRelabel{PageFieldKind::Splat, PageFieldFormat::Rgba8, PageFieldFilter::WeightsTent,
+                         PageFieldFormat::Rgba8Srgb, PageFieldFilter::PremultipliedTent},
+        PageStoreRelabel{PageFieldKind::Splat, PageFieldFormat::Rgba8, PageFieldFilter::WeightsTent, PageFieldFormat::Rg8,
+                         PageFieldFilter::Tent},
+        PageStoreRelabel{PageFieldKind::Splat, PageFieldFormat::Rgba8, PageFieldFilter::WeightsTent, PageFieldFormat::Bc5,
+                         PageFieldFilter::NormalTent},
+        PageStoreRelabel{PageFieldKind::Color, PageFieldFormat::Rgba8Srgb, PageFieldFilter::PremultipliedTent,
+                         PageFieldFormat::Rgba8, PageFieldFilter::WeightsTent},
+        PageStoreRelabel{PageFieldKind::Color, PageFieldFormat::Rgba8Srgb, PageFieldFilter::PremultipliedTent,
+                         PageFieldFormat::Rgba8, PageFieldFilter::Tent},
+        PageStoreRelabel{PageFieldKind::Color, PageFieldFormat::Rgba8Srgb, PageFieldFilter::PremultipliedTent,
+                         PageFieldFormat::Rg8, PageFieldFilter::Tent},
+        PageStoreRelabel{PageFieldKind::Color, PageFieldFormat::Rgba8Srgb, PageFieldFilter::PremultipliedTent,
+                         PageFieldFormat::Bc5, PageFieldFilter::NormalTent},
+        PageStoreRelabel{PageFieldKind::GrassControl, PageFieldFormat::Rg8, PageFieldFilter::Tent, PageFieldFormat::Bc5,
+                         PageFieldFilter::NormalTent}));
+
+TEST_F(PageStoreTest, NineteenPointNineKilometersOfReliefStoreSixteenBitPagesWithinHalfAStep)
+{
+    // Earth's relief over one field: a ramp of 19.9 km. One store-wide 16-bit step would be 30 cm,
+    // past the 1 cm the encoding allows; a step per level with a base per page keeps the pages 16-bit
+    // (each level-0 page spans about 3.1 km, so level 0's step is at most 2^-4 m). A level under 100
+    // pages may let its steepest page store 32-bit integers, one page at most.
+    constexpr uint32 kWidth = 1024;
+    constexpr uint32 kHeight = 640;
+    constexpr float32 kRelief = 19900.0f;
+    const auto ramp = [](uint32 x, uint32 z) {
+        return kRelief * static_cast<float32>(x + z) / static_cast<float32>(kWidth + kHeight - 2u);
+    };
+    const std::filesystem::path source = m_Dir / "earth.r32";
+    WriteR32(source, kWidth, kHeight, ramp);
+    const std::filesystem::path store = m_Dir / "earth.gepage";
+    ASSERT_EQ(Cook(source, kWidth, kHeight, store).Error, "");
+
+    PageStoreReader reader;
+    ASSERT_EQ(reader.Open(store, PageFieldKind::Height), "");
+    const PageStoreLayout& layout = reader.Layout();
+    uint64 wideTotal = 0;
+    for (uint8 level = 0; level < layout.Levels.size(); ++level)
+    {
+        const PageStoreRange& range = layout.Ranges[level];
+        uint64 wide = 0;
+        for (uint64 i = 0; i < range.Count; ++i)
+            wide += layout.Entries[range.First + i].HasWideWords() ? 1u : 0u;
+        EXPECT_LE(wide, 1u) << int(level);
+        wideTotal += wide;
+    }
+    const uint64 pageBytes = std::filesystem::file_size(store) - layout.DataOffset();
+    EXPECT_EQ(pageBytes, (layout.Entries.size() + wideTotal) * kPageSampleCount * sizeof(uint16));
+    const std::vector<float32> grid = LevelGrid(reader, 0);
+    for (uint32 z = 0; z < kHeight; ++z)
+        for (uint32 x = 0; x < kWidth; ++x)
+            ASSERT_NEAR(grid[static_cast<std::size_t>(z) * kWidth + x], ramp(x, z), 0.5f / 16.0f) << x << "," << z;
 }
 
 TEST_F(PageStoreTest, SixteenBitSourcesCookLosslesslyAsNormalizedHeights)
@@ -644,7 +1480,7 @@ TEST_F(PageStoreTest, SixteenBitSourcesCookLosslesslyAsNormalizedHeights)
     ASSERT_EQ(Cook(source, kWidth, kHeight, store).Error, "");
 
     PageStoreReader reader;
-    ASSERT_EQ(reader.Open(store), "");
+    ASSERT_EQ(reader.Open(store, PageFieldKind::Height), "");
     EXPECT_EQ(reader.Layout().Header.Units, PageHeightUnits::Normalized);
     const std::vector<float32> grid = LevelGrid(reader, 0);
     Terrain::HeightfieldData today;
@@ -989,7 +1825,7 @@ TEST_F(PageStoreTest, TerrainContainerReadsItsHeightFieldAtItsOffsetUnchanged)
     ASSERT_EQ(WriteTerrainContainer(container, {&field, 1}), "");
 
     PageStoreReader loose;
-    ASSERT_EQ(loose.Open(store), "");
+    ASSERT_EQ(loose.Open(store, PageFieldKind::Height), "");
     PageStoreReader packed;
     ASSERT_EQ(OpenTerrainContainerField(container, PageFieldKind::Height, packed), "");
     EXPECT_GT(packed.BaseOffset(), 0u);
@@ -1003,6 +1839,19 @@ TEST_F(PageStoreTest, TerrainContainerReadsItsHeightFieldAtItsOffsetUnchanged)
     EXPECT_NE(WriteTerrainContainer(m_Dir / "twice.geterrain", twice), "");
     EXPECT_NE(OpenTerrainContainerField(store, PageFieldKind::Height, packed).find("not a terrain container"),
               std::string::npos);
+
+    // A container of format 1 is refused with the fix a game's reader has: export the game again.
+    const std::filesystem::path older = m_Dir / "older.geterrain";
+    {
+        std::vector<uint8> bytes = FileBytes(container);
+        const uint32 version = 1u;
+        std::memcpy(bytes.data() + 4u, &version, sizeof(version));
+        std::ofstream(older, std::ios::binary)
+            .write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    }
+    const std::string refusal = OpenTerrainContainerField(older, PageFieldKind::Height, packed);
+    EXPECT_NE(refusal.find("is format 1 and this engine reads format 2: export the game again"), std::string::npos)
+        << refusal;
 }
 
 TEST_F(PageStoreTest, PagesLoadThroughTheAssetReaderThreadsAndDecodeOffThem)
@@ -1012,7 +1861,7 @@ TEST_F(PageStoreTest, PagesLoadThroughTheAssetReaderThreadsAndDecodeOffThem)
     const std::filesystem::path store = m_Dir / "load.gepage";
     ASSERT_EQ(Cook(source, 400, 300, store).Error, "");
     auto reader = std::make_shared<PageStoreReader>();
-    ASSERT_EQ(reader->Open(store), "");
+    ASSERT_EQ(reader->Open(store, PageFieldKind::Height), "");
 
     JobSystem::WorkStealingThreadPool pool(2);
     AssetIOService io;
@@ -1060,7 +1909,7 @@ TEST_F(PageStoreTest, APageLoadWhoseDecodeNeverRunsStillResolvesOnce)
     const std::filesystem::path store = m_Dir / "shutdown.gepage";
     ASSERT_EQ(Cook(source, 200, 200, store).Error, "");
     auto reader = std::make_shared<PageStoreReader>();
-    ASSERT_EQ(reader->Open(store), "");
+    ASSERT_EQ(reader->Open(store, PageFieldKind::Height), "");
 
     // One worker, held by a job until the pool shuts down: the page's read completes and its
     // decode is queued behind that job, so the shutdown cancels the decode without running it.
@@ -1408,7 +2257,7 @@ TEST_F(PageStoreTest, ATransientReadFailureIsRetried)
     const HeightStoreCache::Result store = cache.Ensure(GUID::Generate(), source, 300, 260, nullptr, nullptr);
     ASSERT_EQ(store.Error, "");
     auto reader = std::make_shared<PageStoreReader>();
-    ASSERT_EQ(reader->Open(store.Store), "");
+    ASSERT_EQ(reader->Open(store.Store, PageFieldKind::Height), "");
     std::vector<char> bytes;
     {
         std::ifstream in(store.Store, std::ios::binary);
@@ -1604,7 +2453,7 @@ namespace
 {
 
 // The store's pyramid filter, written out: level L + 1 sample (x, z) is the [1 2 1] / 4 tent of
-// level L over clamped indices (HeightPyramidBuilder).
+// level L over clamped indices (PagePyramidBuilder).
 std::vector<std::vector<float32>> TentPyramid(std::vector<float32> level0, const std::vector<PageStoreLevel>& levels)
 {
     std::vector<std::vector<float32>> out{std::move(level0)};
@@ -1730,7 +2579,7 @@ TEST(HeightPageOverlayTest, APageGainsItsLevelsDeltaUnderEveryStoredSampleApronI
     EXPECT_EQ(far, std::vector<float32>(kPageSampleCount, 1.0f));
 }
 
-TEST(PageResidencyTest, ARefreshedResidentPageIsRewrittenInItsSlotAndNeverLeavesIt)
+TEST(PageResidencyTest, ARefreshedResidentPageIsRewrittenInItsSlotWithTheRectsRefreshedUnderIt)
 {
     JobSystem::WorkStealingThreadPool pool(2);
     const auto provider = std::make_shared<GeneratedHeightPageProvider>(NoiseLattice(0.0f, 0.0f, 1024.0f, 1, 1));
@@ -1747,11 +2596,15 @@ TEST(PageResidencyTest, ARefreshedResidentPageIsRewrittenInItsSlotAndNeverLeaves
         residency.Update(++frame, 1.0f / 60.0f, false);
     }
 
-    // An edit over level-0 samples 10 to 20: the level-0 page (0, 0) and its ancestors read them.
+    // An edit over level-0 samples 10 to 20, then one over 30 to 40 by 4 to 12 before any rewrite:
+    // the level-0 page (0, 0) and its ancestors read both, and each rewrite records their union.
     const PageSampleRect edit{10, 10, 20, 20};
+    const PageSampleRect second{30, 4, 40, 12};
+    const PageSampleRect both{10, 4, 40, 20};
     const CachedPage edited{7, PageAddress{0, 0, 0, 0}};
     const uint32 slot = residency.FieldCache(7).SlotOf(edited);
     residency.Refresh(7, edit);
+    residency.Refresh(7, second);
     std::vector<CachedPage> rewritten;
     frame = RunFramesUntil(residency, frame, [&] {
         residency.Request(7, wanted);
@@ -1760,6 +2613,12 @@ TEST(PageResidencyTest, ARefreshedResidentPageIsRewrittenInItsSlotAndNeverLeaves
         {
             EXPECT_NE(residency.Samples(7, upload.Page.Address), nullptr) << "a rewrite without its samples";
             rewritten.push_back(upload.Page);
+        }
+        for (const PageRewrite& rewrite : residency.FieldCache(7).Rewrites())
+        {
+            const PageSampleRect& r = rewrite.Level0Rect;
+            EXPECT_EQ(std::tie(r.MinX, r.MinZ, r.MaxX, r.MaxZ), std::tie(both.MinX, both.MinZ, both.MaxX, both.MaxZ))
+                << "level " << int(rewrite.Page.Address.Level) << " recorded another rect than the two edits under it";
         }
         return rewritten.size() >= provider->Levels().size();
     });

@@ -738,6 +738,7 @@ set(RENDERING_CORE_SOURCES
 	    Source/Materials/ShaderProfileDefines.cpp
 	    # Immediate-mode render graph (the RenderGraph rewrite; dirs rename to
 	    # RenderGraph in this slice-9 commit)
+	    Source/Core/RenderGraph/RGCrossFrameAccesses.cpp
 	    Source/Core/RenderGraph/RGGraph.cpp
 	    Source/Core/RenderGraph/RGFrame.cpp
 	    Source/Core/RenderGraph/RGFrameStamp.cpp
@@ -1336,6 +1337,7 @@ if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTAB
     _ge_add_shaderpkg_graphics(sun_glare sun_glare.vert sun_glare.frag)
     # MSAA variant: same fragment stage, a sampler2DMS depth probe in the vertex stage.
     _ge_add_shaderpkg_graphics(sun_glare_ms sun_glare_ms.vert sun_glare.frag)
+    _ge_add_shaderpkg_compute(sun_glare_casters sun_glare_casters.comp)
     _ge_add_shaderpkg_compute(sky_transmittance_lut sky_transmittance_lut.comp)
     _ge_add_shaderpkg_compute(sky_multiscatter_lut sky_multiscatter_lut.comp)
     _ge_add_shaderpkg_compute(sky_view_lut sky_view_lut.comp)
