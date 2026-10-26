@@ -3012,10 +3012,45 @@ TEST(TerrainRegionBake, AnEditInsideTheHeightPageOverlayRebakesItInPlace)
               0.0f);
 }
 
+namespace
+{
+// Every sample of every level outside the reach of the reported changed rect holds the same delta in
+// `before` and `after`, bit for bit: the pages may skip it.
+void ExpectSameDeltasOutsideTheChangedRect(const TiledTerrainData& tiled, const PageStreaming::HeightPageOverlay& before,
+                                           const PageStreaming::HeightPageOverlay& after)
+{
+    const uint32 samplesX = tiled.Config.TilesPerAxisX * (tiled.Config.TileConfig.HeightmapWidth - 1u) + 1u;
+    const uint32 samplesZ = tiled.Config.TilesPerAxisZ * (tiled.Config.TileConfig.HeightmapHeight - 1u) + 1u;
+    const std::vector<PageStreaming::PageStoreLevel> levels = PageStreaming::BuildPageStoreLevels(samplesX, samplesZ);
+    uint64 mismatched = 0;
+    for (uint32 level = 0; level < levels.size(); ++level)
+    {
+        const PageStreaming::PageSampleRect reach =
+            PageStreaming::Level0RectReach(levels, tiled.PageOverlayChanged, level);
+        const PageStreaming::PageSampleRect region =
+            PageStreaming::Union(PageStreaming::Level0RectReach(levels, before.Level0Rect(), level),
+                                 PageStreaming::Level0RectReach(levels, after.Level0Rect(), level));
+        for (uint32 z = region.MinZ; z <= region.MaxZ; ++z)
+            for (uint32 x = region.MinX; x <= region.MaxX; ++x)
+            {
+                const float32 previous = before.Delta(level, x, z);
+                const float32 current = after.Delta(level, x, z);
+                if (reach.Contains(x, z) || std::memcmp(&previous, &current, sizeof(float32)) == 0)
+                    continue;
+                ++mismatched;
+                EXPECT_LT(mismatched, 2u) << "level " << level << " sample (" << x << ", " << z << ") " << previous
+                                          << " -> " << current << " outside the changed rect";
+            }
+    }
+    EXPECT_EQ(mismatched, 0u);
+}
+} // namespace
+
 // Dragging a modifier at the edge of the overlay's reach rebuilds the overlay over its new rect but
 // composes only the dirty rect and the newly reached strip, keeping every other delta of the previous
 // overlay (a marker written into the previous overlay away from the drag survives it), and apart
-// from the marker the result equals a full rebuild.
+// from the marker the result equals a full rebuild. It reports only the dirty rect as changed (the
+// dragged stamp's old and new bounds), not the grown reach.
 TEST(TerrainRegionBake, DraggingAModifierAtTheReachsEdgeComposesOnlyWhatItMoved)
 {
     ScopedTerrainService scoped;
@@ -3039,6 +3074,7 @@ TEST(TerrainRegionBake, DraggingAModifierAtTheReachsEdgeComposesOnlyWhatItMoved)
     const uint32 markZ = (before.MinZ + before.MaxZ) / 2u;
     constexpr float32 kMarker = 999.0f;
     tiled->PageOverlay->Rebake({markX, markZ, markX, markZ}, std::span<const float32>(&kMarker, 1));
+    const auto previous = tiled->PageOverlay;
 
     world.GetComponentForWrite<Components::WorldTransform>(edge)->matrix[12] = 1520.0f;
     system.Update(world, 1.0f / 60.0f);
@@ -3047,6 +3083,10 @@ TEST(TerrainRegionBake, DraggingAModifierAtTheReachsEdgeComposesOnlyWhatItMoved)
     const PageStreaming::PageSampleRect reach = dragged->Level0Rect();
     EXPECT_GT(reach.MaxX, before.MaxX) << "the drag grows the reach";
     EXPECT_EQ(dragged->Delta(0, markX, markZ), kMarker) << "a drag at the reach's edge recomposed the whole overlay";
+    const PageStreaming::PageSampleRect& changed = tiled->PageOverlayChanged;
+    EXPECT_LT(changed.Width(), reach.Width()) << "the drag reported the whole reach";
+    EXPECT_LT(changed.Height(), reach.Height()) << "the drag reported the whole reach";
+    ExpectSameDeltasOutsideTheChangedRect(*tiled, *previous, *dragged);
 
     // The same modifiers baked from scratch.
     tiled->PageOverlayCurrent = false;
@@ -3066,6 +3106,161 @@ TEST(TerrainRegionBake, DraggingAModifierAtTheReachsEdgeComposesOnlyWhatItMoved)
                 ASSERT_NEAR(dragged->Delta(level, x, z), tiled->PageOverlay->Delta(level, x, z), 1.0e-6f)
                     << "level " << level << " sample (" << x << ", " << z << ")";
             }
+}
+
+// A dab beside the overlay grows it, and the grown overlay reports only the dab's samples as changed
+// (the rect the dab alone bakes), not the whole grown area: the pages rewrite the dab, not the stroke.
+TEST(TerrainRegionBake, ADabThatGrowsTheHeightPageOverlayReportsOnlyTheDabsSamples)
+{
+    ScopedTerrainService scoped;
+    auto& svc = TerrainService::Get();
+    const auto handle = CreateResidentTiledTerrain(svc, 2);
+    const auto aloneHandle = CreateResidentTiledTerrain(svc, 2);
+    auto* tiled = svc.GetTiledTerrainData(handle);
+    auto* alone = svc.GetTiledTerrainData(aloneHandle);
+    ASSERT_NE(tiled, nullptr);
+    ASSERT_NE(alone, nullptr);
+    tiled->PageOverlayByteCap = kDesktopHeightPages.OverlayByteCap;
+
+    ECS::World world;
+    RegisterModifierLifecycleEvents(world);
+    CreateTiledTerrainEntity(world, handle, 2);
+    CreateFlattenModifier(world, kTiledTileWorld, 500.0f, 35.0f, 20.0f);
+    TerrainModifierSystem system;
+    system.Update(world, 1.0f / 60.0f);
+    ASSERT_NE(tiled->PageOverlay, nullptr);
+    const PageStreaming::PageSampleRect first = tiled->PageOverlay->Level0Rect();
+    const uint64 version = tiled->PageOverlayVersion;
+
+    CreateFlattenModifier(world, kTiledTileWorld + 40.0f, 500.0f, 35.0f, 20.0f);
+    system.Update(world, 1.0f / 60.0f);
+    ASSERT_NE(tiled->PageOverlay, nullptr);
+    const PageStreaming::PageSampleRect grown = tiled->PageOverlay->Level0Rect();
+    ASSERT_GT(grown.MaxX, first.MaxX) << "the second dab grows the overlay";
+    EXPECT_EQ(tiled->PageOverlayChangedSince, version);
+
+    // The second dab alone, on a terrain of its own.
+    ECS::World aloneWorld;
+    RegisterModifierLifecycleEvents(aloneWorld);
+    CreateTiledTerrainEntity(aloneWorld, aloneHandle, 2);
+    CreateFlattenModifier(aloneWorld, kTiledTileWorld + 40.0f, 500.0f, 35.0f, 20.0f);
+    alone->PageOverlayByteCap = kDesktopHeightPages.OverlayByteCap;
+    TerrainModifierSystem aloneSystem;
+    aloneSystem.Update(aloneWorld, 1.0f / 60.0f);
+    ASSERT_NE(alone->PageOverlay, nullptr);
+    const PageStreaming::PageSampleRect dab = alone->PageOverlay->Level0Rect();
+
+    const PageStreaming::PageSampleRect& changed = tiled->PageOverlayChanged;
+    EXPECT_EQ(changed.MinX, dab.MinX);
+    EXPECT_EQ(changed.MinZ, dab.MinZ);
+    EXPECT_EQ(changed.MaxX, dab.MaxX);
+    EXPECT_EQ(changed.MaxZ, dab.MaxZ);
+    EXPECT_LT(changed.Width(), grown.Width()) << "the grown overlay reported its whole area";
+}
+
+// Deleting a modifier at the overlay's edge reports a rect that covers the deleted modifier's old
+// bounds, and its samples return to the base.
+TEST(TerrainRegionBake, DeletingAModifierAtTheHeightPageOverlaysEdgeReportsItsOldBounds)
+{
+    ScopedTerrainService scoped;
+    auto& svc = TerrainService::Get();
+    const auto handle = CreateResidentTiledTerrain(svc, 2);
+    auto* tiled = svc.GetTiledTerrainData(handle);
+    ASSERT_NE(tiled, nullptr);
+    tiled->PageOverlayByteCap = kDesktopHeightPages.OverlayByteCap;
+
+    ECS::World world;
+    RegisterModifierLifecycleEvents(world);
+    CreateTiledTerrainEntity(world, handle, 2);
+    CreateFlattenModifier(world, kTiledTileWorld, 500.0f, 35.0f, 20.0f);
+    const auto edge = CreateFlattenModifier(world, kTiledTileWorld + 40.0f, 500.0f, 35.0f, 20.0f);
+    TerrainModifierSystem system;
+    system.Update(world, 1.0f / 60.0f);
+    ASSERT_NE(tiled->PageOverlay, nullptr);
+    const PageStreaming::PageSampleRect old = tiled->PageOverlay->Level0Rect();
+    // Each stamp (20 m radius) spans 59 level-0 samples: the first one starts at the overlay's MinX,
+    // the edge one ends at its MaxX.
+    constexpr uint32 kEdgeStampSamples = 59u;
+    const uint32 centerX = old.MaxX - 20u;
+    const uint32 centerZ = (old.MinZ + old.MaxZ) / 2u;
+    EXPECT_NE(tiled->PageOverlay->Delta(0, centerX, centerZ), 0.0f);
+
+    world.DestroyEntityImmediate(edge);
+    world.SwapLifecycleEvents();
+    system.Update(world, 1.0f / 60.0f);
+    ASSERT_NE(tiled->PageOverlay, nullptr);
+    const PageStreaming::PageSampleRect& changed = tiled->PageOverlayChanged;
+    EXPECT_GE(changed.MaxX, old.MaxX) << "the reported rect misses the deleted modifier's old bounds";
+    EXPECT_LE(changed.MinX, old.MaxX - (kEdgeStampSamples - 1u));
+    EXPECT_LE(changed.MinZ, centerZ);
+    EXPECT_GE(changed.MaxZ, centerZ);
+    for (uint32 x = old.MinX + kEdgeStampSamples; x <= old.MaxX; ++x)
+        EXPECT_EQ(tiled->PageOverlay->Delta(0, x, centerZ), 0.0f) << "sample " << x << " kept the deleted delta";
+}
+
+// Deleting the last height modifier releases the overlay and reports its whole area as changed: the
+// pages return to the base under all of it.
+TEST(TerrainRegionBake, DeletingTheLastHeightModifierReportsTheReleasedOverlaysWholeArea)
+{
+    ScopedTerrainService scoped;
+    auto& svc = TerrainService::Get();
+    const auto handle = CreateResidentTiledTerrain(svc, 2);
+    auto* tiled = svc.GetTiledTerrainData(handle);
+    ASSERT_NE(tiled, nullptr);
+    tiled->PageOverlayByteCap = kDesktopHeightPages.OverlayByteCap;
+
+    ECS::World world;
+    RegisterModifierLifecycleEvents(world);
+    CreateTiledTerrainEntity(world, handle, 2);
+    const auto only = CreateFlattenModifier(world, kTiledTileWorld, 500.0f, 35.0f, 20.0f);
+    TerrainModifierSystem system;
+    system.Update(world, 1.0f / 60.0f);
+    ASSERT_NE(tiled->PageOverlay, nullptr);
+    const PageStreaming::PageSampleRect old = tiled->PageOverlay->Level0Rect();
+    const uint64 version = tiled->PageOverlayVersion;
+
+    world.DestroyEntityImmediate(only);
+    world.SwapLifecycleEvents();
+    system.Update(world, 1.0f / 60.0f);
+    EXPECT_EQ(tiled->PageOverlay, nullptr);
+    EXPECT_EQ(tiled->PageOverlayChangedSince, version);
+    const PageStreaming::PageSampleRect& changed = tiled->PageOverlayChanged;
+    EXPECT_EQ(changed.MinX, old.MinX);
+    EXPECT_EQ(changed.MinZ, old.MinZ);
+    EXPECT_EQ(changed.MaxX, old.MaxX);
+    EXPECT_EQ(changed.MaxZ, old.MaxZ);
+}
+
+// An overlay rebuilt from scratch (its modifiers' data is no longer current) reports its whole area
+// as changed: the pages hold no overlay it derives from.
+TEST(TerrainRegionBake, AHeightPageOverlayRebuiltFromScratchReportsItsWholeArea)
+{
+    ScopedTerrainService scoped;
+    auto& svc = TerrainService::Get();
+    const auto handle = CreateResidentTiledTerrain(svc, 2);
+    auto* tiled = svc.GetTiledTerrainData(handle);
+    ASSERT_NE(tiled, nullptr);
+    tiled->PageOverlayByteCap = kDesktopHeightPages.OverlayByteCap;
+
+    ECS::World world;
+    RegisterModifierLifecycleEvents(world);
+    CreateTiledTerrainEntity(world, handle, 2);
+    CreateFlattenModifier(world, kTiledTileWorld, 500.0f, 35.0f, 20.0f);
+    TerrainModifierSystem system;
+    system.Update(world, 1.0f / 60.0f);
+    ASSERT_NE(tiled->PageOverlay, nullptr);
+    const PageStreaming::PageSampleRect first = tiled->PageOverlay->Level0Rect();
+
+    CreateFlattenModifier(world, kTiledTileWorld + 40.0f, 500.0f, 35.0f, 20.0f);
+    tiled->PageOverlayCurrent = false;
+    system.Update(world, 1.0f / 60.0f);
+    ASSERT_NE(tiled->PageOverlay, nullptr);
+    const PageStreaming::PageSampleRect grown = tiled->PageOverlay->Level0Rect();
+    const PageStreaming::PageSampleRect& changed = tiled->PageOverlayChanged;
+    EXPECT_EQ(changed.MinX, std::min(first.MinX, grown.MinX));
+    EXPECT_EQ(changed.MinZ, std::min(first.MinZ, grown.MinZ));
+    EXPECT_EQ(changed.MaxX, std::max(first.MaxX, grown.MaxX));
+    EXPECT_EQ(changed.MaxZ, std::max(first.MaxZ, grown.MaxZ));
 }
 
 // Two terrains' data never publish the same overlay version: a scene load rebuilds a terrain's data

@@ -43,23 +43,31 @@ struct ConformMissTally
     uint32 Probes = 0;
     uint32 Misses = 0;
     Mathematics::Vector3 FirstMiss{};
+    // Rays that crossed a mesh whose BVH is still being built. They are not misses: the rebuild
+    // holds (HoldForPendingBvh) and casts them again once the BVH is published.
+    uint32 PendingBvh = 0;
 
     // The first missing sample is kept as the witness: it is the one a reader can
     // navigate to, and later misses in the same run are almost always its neighbours.
-    void Record(bool hit, const Mathematics::Vector3& sample);
+    void Record(bool hit, bool bvhPending, const Mathematics::Vector3& sample);
 };
 
-// Down-ray conform against the visible scene: the ray starts above the sample
-// and probes straight down. Returns true and writes the hit when anything
-// under the sample was struck. `outNormal` (optional) receives the surface
+// Down-ray conform against the scene: the ray starts above the sample and
+// probes straight down through the engine's Scene::RaycastScene. Returns true
+// and writes the hit when anything under the sample was struck. `outNormal` (optional) receives the surface
 // normal at the hit — a real triangle normal for mesh ground and a
 // heightfield-gradient normal for planar terrain — so one ray carries the
 // full surface orientation (pitch AND roll), not just height.
 // `tally` (optional) accumulates the miss diagnostics above.
 //
-// `target` chooses what counts as ground. Scene — the default, and what every
-// recipe did before the knob existed — takes the nearest surface of any kind,
-// so a sample under a cart lands on the cart. TerrainOnly makes meshes and
+// The targets are the same in every process: the terrain and the renderers
+// with a CPU mesh, the primitives among them. Never the editor's pick providers
+// or the Scene View eye, which a Player does not have, and never a renderer's
+// bounds: a renderer with no CPU mesh is no hit, and a mesh whose BVH is still
+// being built is no hit counted in the tally's PendingBvh, never awaited.
+//
+// `target` chooses what counts as ground. Scene, the default, takes the nearest
+// surface of any kind, so a sample under a cart lands on the cart. TerrainOnly makes meshes and
 // primitives transparent to the ray. It is the AUTHOR's choice because the ray
 // cannot tell scenery from ground: a bridge deck is ground and a cart is not,
 // and both are just meshes to the picker.
@@ -70,6 +78,22 @@ bool ConformRayDown(ECS::World& world, const Mathematics::Vector3& sample,
                     ConformMissTally* tally = nullptr,
                     Components::SplineConformTarget target =
                         Components::SplineConformTarget::Scene);
+
+// A rebuild held on a mesh whose BVH is still being built. The controller keeps its previous
+// output and does not mark the recipe built, so its rebuild gate asks again on the next frame and
+// the rebuild lands once the BVH is published. The conform never waits for a BVH: a wait would
+// stall the frame that runs it.
+struct ConformHold
+{
+    bool Held = false;     // the last rebuild held; the controller clears it before each rebuild
+    bool Reported = false; // the hold was logged; cleared when a rebuild lands
+};
+
+// Ends a rebuild's conform once every ray is cast: true when a ray crossed a pending BVH, and then
+// `hold` is marked held and the hold is logged once ("Held: BVH pending"); false lets the rebuild
+// land and re-arms the log.
+[[nodiscard]] bool HoldForPendingBvh(const ConformMissTally& tally, uint32 entityId,
+                                     ConformHold& hold);
 
 // Warn once for a rebuild whose conform rays missed, naming the count, the probe
 // total, the witness position and the ray's reach. `lastReportedMisses` is the

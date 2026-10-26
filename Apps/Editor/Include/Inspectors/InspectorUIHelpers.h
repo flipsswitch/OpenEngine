@@ -104,6 +104,20 @@ inline void SetSubtreeEnabled(UIElement* node, bool enabled)
         SetSubtreeEnabled(child.get(), enabled);
 }
 
+// The nearest ancestor of `control` that is an inspector row (class "inspector-row"), or null when
+// `control` is null or sits in no row.
+inline UIElement* RowOfControl(UIElement* control)
+{
+    if (!control)
+        return nullptr;
+    for (UIElement* up = control->GetParent(); up; up = up->GetParent())
+    {
+        if (up->HasClass("inspector-row"))
+            return up;
+    }
+    return nullptr;
+}
+
 // Makes the inspector row holding `control` active or inactive. The disabled row is what blocks
 // input to everything in it, label scrub included (the UI manager delivers no press, key or focus
 // into a disabled element). The control, every element inside it and the row's labels are disabled
@@ -115,14 +129,10 @@ inline void SetRowOfControlEnabled(UIElement* control, bool enabled)
     if (!control)
         return;
     SetSubtreeEnabled(control, enabled);
-    for (UIElement* up = control->GetParent(); up; up = up->GetParent())
+    if (UIElement* row = RowOfControl(control))
     {
-        if (up->HasClass("inspector-row"))
-        {
-            up->SetEnabled(enabled);
-            SetRowLabelsEnabled(up, enabled);
-            break;
-        }
+        row->SetEnabled(enabled);
+        SetRowLabelsEnabled(row, enabled);
     }
 }
 

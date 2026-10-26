@@ -25,6 +25,7 @@ void RGGraph::BeginFrame()
     m_ResourceImported.clear();
     m_ResourceInitLayout.clear();
     m_ResourceExportLayout.clear();
+    m_ResourceCrossFramePhysical.clear();
     m_Passes.clear();
     m_Accesses.clear();
     m_OrderingEdges.clear();
@@ -91,6 +92,7 @@ RGResourceId RGGraph::CreateResource(const RGResourceDesc& desc)
     m_ResourceImported.push_back(0);
     m_ResourceInitLayout.push_back(RGImageLayout::Undefined);
     m_ResourceExportLayout.push_back(RGImageLayout::Undefined);
+    m_ResourceCrossFramePhysical.push_back(0);
     return id;
 }
 
@@ -115,6 +117,13 @@ void RGGraph::MarkImported(RGResourceId id, RGImageLayout initialLayout)
     m_ResourceImported[id] = 1;
     m_ResourceInitLayout[id] = initialLayout;
     m_ResourceExternal[id] = 1; // imported resources are sinks/sources -> not culled
+}
+
+void RGGraph::SetCrossFramePhysical(RGResourceId id, uint64_t physical)
+{
+    assert(id < m_Resources.size() && "SetCrossFramePhysical: unknown resource");
+    assert(m_ResourceImported[id] != 0 && "SetCrossFramePhysical: imported resources only");
+    m_ResourceCrossFramePhysical[id] = physical;
 }
 
 RGPassId RGGraph::AddPass(const RGPassDesc& desc)
