@@ -211,17 +211,21 @@ ge_stage_shader_graph_nodes(Player)
 # resolve this install path: GameUIHost's default HUD font load and
 # UIManager's default-atlas resolver (<install assets root>/Fonts).
 # --asset-root selects project content independently of these bundled defaults.
-# The staged set mirrors the UI test font staging (ge_add_ui_test, Engine/Modules/UI).
 add_custom_command(TARGET Player POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/Fonts/Roboto-Regular.ttf"
-            "${_GE_PLAYER_CONTENT_DIR}/Assets/Fonts/Roboto-Regular.ttf"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/Fonts/RobotoMono-Regular.ttf"
-            "${_GE_PLAYER_CONTENT_DIR}/Assets/Fonts/RobotoMono-Regular.ttf"
-    COMMENT "Staging default UI fonts (Roboto-Regular, RobotoMono-Regular) for Player"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+            "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/Fonts"
+            "${_GE_PLAYER_CONTENT_DIR}/Assets/Fonts"
+    COMMAND ${CMAKE_COMMAND} "-DPLAYER_CONTENT_DIR=${_GE_PLAYER_CONTENT_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/Tests/VerifyFontStaging.cmake"
+    COMMENT "Staging bundled UI font families for Player"
     VERBATIM
 )
+
+if(BUILD_TESTING)
+    add_test(NAME PlayerFontStaging
+        COMMAND ${CMAKE_COMMAND} "-DPLAYER_CONTENT_DIR=${_GE_PLAYER_CONTENT_DIR}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/Tests/VerifyFontStaging.cmake")
+endif()
 
 # Runtime animation defaults are needed even when the project supplies no profile.
 add_custom_target(StagePlayerHumanoidProfile
