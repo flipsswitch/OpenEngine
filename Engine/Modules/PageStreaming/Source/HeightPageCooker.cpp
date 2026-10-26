@@ -1,9 +1,10 @@
 #include "PageStreaming/HeightPageCooker.h"
 
-#include "HeightPyramidBuilder.h"
+#include "PagePyramidBuilder.h"
 #include "HeightSourceRows.h"
+#include "HeightStepPlanner.h"
 #include "SourceRangeReader.h"
-#include "PageStreaming/HeightPageCodec.h"
+#include "HeightPageCodec.h"
 #include "PageStreaming/PageStoreReader.h"
 #include "PageStreaming/PageStoreWriter.h"
 
@@ -74,50 +75,44 @@ std::string ResolvePngSource(const std::filesystem::path& file, HeightCookSource
     return {};
 }
 
-// The running range of a scan's float samples; false at a sample that is not a finite number.
-bool AccumulateRange(const uint8* bytes, std::size_t count, float32& lowest, float32& highest)
+// A scan chunk's float samples into the step planner; false at a sample that is not a finite number.
+bool PlanSteps(const uint8* bytes, std::size_t count, HeightStepPlanner& planner)
 {
     const auto* samples = reinterpret_cast<const float32*>(bytes);
     for (std::size_t i = 0; i < count; ++i)
-    {
         if (!std::isfinite(samples[i]))
             return false;
-        lowest = std::min(lowest, samples[i]);
-        highest = std::max(highest, samples[i]);
-    }
+    planner.Push({samples, count});
     return true;
-}
-
-HeightEncoding EncodingFor(const HeightCookRequest& request)
-{
-    if (request.Source.Format == HeightSourceFormat::R32)
-        return ChooseAbsoluteHeightEncoding(request.Identity.MinHeight, request.Identity.MaxHeight);
-    return NormalizedHeightEncoding();
 }
 
 PageStoreHeader MakeHeader(const HeightCookRequest& request)
 {
-    const HeightEncoding encoding = EncodingFor(request);
+    const bool absolute = request.Source.Format == HeightSourceFormat::R32;
     PageStoreHeader header;
-    header.Format = encoding.Format;
+    header.Format = PageFieldFormat::HeightSteps;
     header.Filter = PageFieldFilter::HeightTent;
-    header.Units = request.Source.Format == HeightSourceFormat::R32 ? PageHeightUnits::Absolute
-                                                                    : PageHeightUnits::Normalized;
+    header.Units = absolute ? PageHeightUnits::Absolute : PageHeightUnits::Normalized;
     header.FaceCount = 1;
+    header.FaceMap = PageFaceMap::Flat;
     header.SamplesX = request.Source.SamplesX;
     header.SamplesZ = request.Source.SamplesZ;
-    header.Quantum = encoding.Quantum;
+    header.ReferenceRadius = 0.0;
+    const std::size_t levels = BuildPageStoreLevels(header.SamplesX, header.SamplesZ).size();
+    for (std::size_t level = 0; level < levels; ++level)
+        header.StepPerLevel[level] =
+            absolute ? std::ldexp(1.0f, request.Identity.StepExponents[level]) : kNormalizedHeightStep;
     header.Key = request.Key;
     return header;
 }
 
-// A previous store whose pages a cook can patch: same grid, encoding and units.
+// A previous store whose pages a cook can patch: same grid, steps and units.
 bool CanPatch(const PageStoreHeader& previous, const PageStoreHeader& next)
 {
     return previous.Format == next.Format && previous.Filter == next.Filter && previous.Units == next.Units &&
-           previous.FaceCount == next.FaceCount && previous.SamplesX == next.SamplesX &&
-           previous.SamplesZ == next.SamplesZ && previous.Quantum.Offset == next.Quantum.Offset &&
-           previous.Quantum.Step == next.Quantum.Step;
+           previous.FaceCount == next.FaceCount && previous.FaceMap == next.FaceMap &&
+           previous.SamplesX == next.SamplesX && previous.SamplesZ == next.SamplesZ &&
+           previous.ReferenceRadius == next.ReferenceRadius && previous.StepPerLevel == next.StepPerLevel;
 }
 
 std::string StartStore(const HeightCookRequest& request, const PageStoreHeader& header, PageStoreWriter& writer,
@@ -130,7 +125,7 @@ std::string StartStore(const HeightCookRequest& request, const PageStoreHeader& 
         PageStoreLayout previousLayout;
         {
             PageStoreReader previous;
-            if (previous.Open(request.Previous).empty())
+            if (previous.Open(request.Previous, PageFieldKind::Height).empty())
                 previousLayout = previous.Layout();
         }
         if (!previousLayout.Levels.empty() && CanPatch(previousLayout.Header, header))
@@ -176,9 +171,10 @@ std::string ScanHeightSource(const HeightCookSource& source, AssetIOService* io,
 
     HeightSourceIdentity identity;
     identity.ContentHash = Hashing::kFnv1a64OffsetBasis;
-    float32 lowest = std::numeric_limits<float32>::max();
-    float32 highest = std::numeric_limits<float32>::lowest();
+    identity.SamplesX = source.SamplesX;
+    identity.SamplesZ = source.SamplesZ;
     const bool ranged = source.Format == HeightSourceFormat::R32;
+    HeightStepPlanner planner(ranged ? source.SamplesX : 0u, ranged ? source.SamplesZ : 0u);
 
     // One chunk is read ahead while the one before it is hashed.
     SourceRangeReader reader(source.File, io);
@@ -202,7 +198,7 @@ std::string ScanHeightSource(const HeightCookSource& source, AssetIOService* io,
         identity.ContentHash = Hashing::Fnv1a64(chunk.data(), chunk.size(), identity.ContentHash);
         if (progress)
             progress->RowsDone.store(offset * source.SamplesZ / size);
-        if (ranged && !AccumulateRange(chunk.data(), chunk.size() / 4u, lowest, highest))
+        if (ranged && !PlanSteps(chunk.data(), chunk.size() / 4u, planner))
         {
             if (offset < size)
                 reader.Take(chunk);
@@ -210,10 +206,7 @@ std::string ScanHeightSource(const HeightCookSource& source, AssetIOService* io,
         }
     }
     if (ranged)
-    {
-        identity.MinHeight = lowest;
-        identity.MaxHeight = highest;
-    }
+        identity.StepExponents = planner.StepExponents();
     out = identity;
     return {};
 }
@@ -231,7 +224,7 @@ HeightCookResult CookHeightPageStore(const HeightCookRequest& request)
         return result;
 
     // Each band is read while the band before it builds the pyramid.
-    HeightPyramidBuilder builder(writer, result.Patched, request.Pool);
+    PagePyramidBuilder builder(writer, result.Patched, request.Pool);
     const uint32 height = request.Source.SamplesZ;
     std::vector<float32> band(static_cast<std::size_t>(request.Source.SamplesX) * kCookBandRows);
     rows.RequestRows(0, std::min(kCookBandRows, height));
@@ -253,7 +246,7 @@ HeightCookResult CookHeightPageStore(const HeightCookRequest& request)
             result.Error = "the cook was cancelled";
             return result;
         }
-        builder.PushLevel0Rows(band.data(), count);
+        builder.PushLevel0Rows(reinterpret_cast<const uint8*>(band.data()), count);
         row = nextRow;
         if (request.Progress)
             request.Progress->RowsDone.store(static_cast<uint64>(height) + row);

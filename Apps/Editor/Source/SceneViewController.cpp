@@ -33,21 +33,6 @@
 #include "Rendering/Core/PipelineDescTranslator.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
-#include <algorithm>
-#include <utility>
-#include <atomic>
-#include <cassert>
-#include <cmath>
-#include <cstdlib>
-#include <cstring>
-#include <filesystem>
-#include <limits>
-#include <memory>
-#include <numeric>
-#include <optional>
-#include <string>
-#include <vector>
-
 #include "Components/Rendering/Camera.h"
 #include "Components/Rendering/PostProcessVolume.h"
 #include "Components/Rendering/LocalBounds.h"
@@ -70,13 +55,28 @@
 #include "Rendering/Geometry/VertexLayoutBuilder.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 #include "Logger/Logger.h"
-#include "Picking/MeshPickingService.h"
+#include "Picking/ScenePick.h"
 #include "Picking/PickRootResolver.h"
 #include "UI/Controls/Widgets/CameraBookmarksWidget.h"
 #include "Editor/Settings/SceneViewSettings.h"
 #include "SceneView/SceneViewFraming.h"
 #include "SceneView/SceneViewOverlayShared.h"
 #include "TerrainECS/TerrainService.h"
+
+#include <algorithm>
+#include <atomic>
+#include <cassert>
+#include <cmath>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <limits>
+#include <memory>
+#include <numeric>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace
 {
@@ -1679,18 +1679,20 @@ void SceneViewController::UpdatePickCandidates(GameEngine::ECS::World& world,
     // descendants are filtered out without blocking picks of entities behind.
     // Terrain is included (PickOptions default): it is scene geometry the user
     // clicks like any other, and the scene view has no other way to select it.
-    Editor::Picking::PickOptions options;
+    // A renderer with no CPU mesh is clicked through its box (IncludeBoundsFallback).
+    Scene::PickOptions options;
+    options.IncludeBoundsFallback = true;
     options.WaitForSceneTlas = false; // the caller saw the scene TLAS ready (SceneTlasReadyForPick)
-    GameEngine::Editor::Picking::RaycastSceneAll(ray, world, m_PickHits, options);
+    GameEngine::Editor::Picking::PickSceneAll(ray, world, m_PickHits, options);
     m_PickHits.erase(std::remove_if(m_PickHits.begin(), m_PickHits.end(),
-                                    [this](const Editor::Picking::PickHit& h)
+                                    [this](const Scene::PickHit& h)
                                     { return !IsEntityPickable(h.Entity); }),
                      m_PickHits.end());
     Editor::Picking::BuildPickCandidates(world, m_PickHits, exactPick, m_PickCandidates);
 
     m_PickCacheRay = ray;
     m_PickCacheExactMode = exactPick;
-    // Sample versions after the raycast: RaycastSceneAll's TLAS sync may
+    // Sample versions after the raycast: PickSceneAll's TLAS sync may
     // itself count as a write grant, which would otherwise invalidate the
     // fresh cache immediately.
     m_PickCacheWriteVersion = world.GetGlobalSystemVersion();
@@ -2185,20 +2187,21 @@ void SceneViewController::HandleHoverDetection(const Editor::SceneTools::ScenePo
         return;
     }
 
-    Editor::Picking::PickOptions options;
+    Scene::PickOptions options;
+    options.IncludeBoundsFallback = true;
     options.WaitForSceneTlas = false; // ready, checked above
     // Hover highlights by drawing the entity's LocalBounds box, which terrain does not
     // carry — a hovered terrain would put a default 1 m box under the cursor everywhere
     // over the ground. Clicking still selects it; only the preview box is mesh-only.
     options.IncludeTerrain  = false;
     options.IncludeDisabled = revealHidden; // honor reveal-hidden modifier
-    std::vector<Editor::Picking::PickHit> hits;
-    GameEngine::Editor::Picking::RaycastSceneAll(event.ray, *world, hits, options);
+    std::vector<Scene::PickHit> hits;
+    GameEngine::Editor::Picking::PickSceneAll(event.ray, *world, hits, options);
 
     GameEngine::ECS::EntityHandle hoverEntity{};
     for (const auto& hit : hits)
     {
-        // Hidden-via-ancestor filter (RaycastSceneAll already filtered the
+        // Hidden-via-ancestor filter (PickSceneAll already filtered the
         // entity itself when IncludeDisabled is false).
         if (!revealHidden && !GameEngine::ECS::Entity(world, hit.Entity).IsEnabledInHierarchy())
             continue;

@@ -1,9 +1,9 @@
 #include "PageStreaming/PageLoader.h"
 
 #include "PageStreaming/GeneratedHeightPageProvider.h"
-#include "PageStreaming/HeightPageCodec.h"
 #include "PageStreaming/PageStoreFormat.h"
 #include "PageStreaming/PageStoreReader.h"
+#include "HeightPageCodec.h"
 
 #include "AssetCore/Asset.h"
 #include "Assets/AssetIOService.h"
@@ -63,8 +63,16 @@ SharedPtr<Asset> DecodeLoadedPage(PendingPageLoad& load, Vector<uint8> bytes)
         load.Fail("the page load was cancelled");
         return nullptr;
     }
+    const PageStoreLayout& layout = load.Request().Store->Layout();
+    const PageAddress address = load.Request().Address;
+    const PageIndexEntry* entry = layout.FindPresent(address);
+    if (!entry || bytes.size() != layout.StoredBytes(*entry))
+    {
+        load.Fail("the page's bytes are not its stored size");
+        return nullptr;
+    }
     std::vector<float32> samples(kPageSampleCount);
-    DecodeHeightPage(load.Request().Store->Layout().Header, bytes, samples);
+    DecodeHeightPage(layout.Header, address.Level, *entry, bytes, samples);
     load.Load(std::move(samples));
     return nullptr;
 }
@@ -87,7 +95,7 @@ void SubmitHeightPageLoad(AssetIOService& io, PageLoadRequest request)
     read.Metadata.Path = pending.Store->File();
     read.Priority = pending.Priority;
     read.RangeOffset = pending.Store->BaseOffset() + entry->Offset;
-    read.RangeBytes = entry->Size;
+    read.RangeBytes = pending.Store->Layout().StoredBytes(*entry);
     read.CancelRequested = pending.Cancel;
     read.ProcessData = [load](Vector<uint8> bytes) { return DecodeLoadedPage(*load, std::move(bytes)); };
     read.OnFailure = [load](const String& error) { load->Fail(error); };
