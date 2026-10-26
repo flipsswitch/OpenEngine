@@ -3,6 +3,8 @@
 #include "PageStreaming/CpuPageDirectory.h"
 #include "PageStreaming/PageCache.h"
 #include "PageStreaming/PageLoader.h"
+#include "PageStreaming/PageSampleRect.h"
+#include "Types/FlatMap.h"
 
 #include <atomic>
 #include <chrono>
@@ -29,11 +31,13 @@ class AssetIOService;
 namespace GameEngine::PageStreaming
 {
 
-struct PageSampleRect;
-
 /// The synchronous CPU fetch's share of a frame (design page-streaming D3): CPU window pages are
 /// fetched on the main thread only while less than this has passed since the frame's Update began.
 inline constexpr std::chrono::microseconds kCpuSyncFetchDeadline{500};
+/// The most level-0 samples along either axis of a store whose pages stream: 2^22. The CPU
+/// directory is one 32-bit-counted entry per page of every level, which this keeps inside 32 bits;
+/// a larger store is refused before it streams (TerrainECS DenseDirectoryRefusal).
+inline constexpr uint32 kCpuDirectoryMaxSamplesPerAxis = 1u << 22u;
 
 /// The clock the synchronous fetch's deadline is read from.
 using PageFetchClock = std::function<std::chrono::steady_clock::time_point()>;
@@ -186,7 +190,9 @@ private:
         std::unordered_map<PageAddress, LoadedPage, PageAddressHash> Loaded;
         std::unordered_set<PageAddress, PageAddressHash> InFlight;
         std::unordered_set<PageAddress, PageAddressHash> Absent;
-        std::unordered_set<PageAddress, PageAddressHash> Stale; // resident pages to load and rewrite (Refresh)
+        // Resident pages to load and rewrite (Refresh), each with the union of the level-0 rects
+        // refreshed under it since its last rewrite.
+        FlatMap<PageAddress, PageSampleRect> Stale;
         std::unordered_map<PageAddress, LoadFailure, PageAddressHash> Failures;
         uint32 CpuPinnedLevel = ~0u;               // the CPU keeps every page of this level and coarser
         std::vector<PageAddress> CpuWindow;        // this frame's CPU window pages, nearest first
