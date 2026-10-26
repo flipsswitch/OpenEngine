@@ -56,7 +56,7 @@ By default the surface bakes every mesh that does not move, so a flower, a reed,
 | Include | Always baked, where it stands when the bake runs, also on a kinematic or dynamic body or a navigation agent. The surface does not follow it when it moves. A child that inherits Include and moves on its own, such as a crew member on an included deck, is left out unless it sets Include itself. |
 | Exclude | Never baked. Colliders are separate sources: a Static collider on the same entity or a child is still baked. |
 
-The policy covers the entity's own mesh and the meshes of its children: the children of a blueprint, and the submesh entities a model makes under the entity that shows it. A child with its own Navigation Source, Auto included, follows its own policy instead. Saving the scene or the blueprint keeps the policy.
+The policy covers the entity's own mesh and the meshes of its children: the children of a prefab, and the submesh entities a model makes under the entity that shows it. A child with its own Navigation Source, Auto included, follows its own policy instead. Saving the scene or the prefab keeps the policy.
 
 :::tip[A tree agents walk under]
 

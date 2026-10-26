@@ -68,6 +68,7 @@
 #include "TerrainGrass/RegisterTerrainGrass.h"
 #include "Ocean/Systems/RegisterOceanSystems.h"
 #include "MarkupECS/MarkupService.h"
+#include "SplineECS/SplineNetwork.h"
 #include "SplineECS/SplineService.h"
 #include "SplineECS/Systems/RegisterSplineSystems.h"
 #include "PathfindingECS/NavigationService.h"
@@ -274,6 +275,8 @@ const WorldServiceLifecycle kWorldServices[] = {
      &TerrainECS::TerrainService::Shutdown},
     {&SplineECS::SplineService::IsInitialized, &SplineECS::SplineService::Initialize,
      &SplineECS::SplineService::Shutdown},
+    {&SplineECS::SplineNetwork::IsInitialized, &SplineECS::SplineNetwork::Initialize,
+     &SplineECS::SplineNetwork::Shutdown},
     {&MarkupECS::MarkupService::IsInitialized, &MarkupECS::MarkupService::Initialize,
      &MarkupECS::MarkupService::Shutdown},
     {&PathfindingECS::NavigationService::IsInitialized, &PathfindingECS::NavigationService::Initialize,

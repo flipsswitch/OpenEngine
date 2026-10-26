@@ -1157,7 +1157,7 @@ bool CBT_PlanarRangeBelowPx(CBTFrameParams fp, vec3 origin, vec3 camRel, vec2 uv
     return strict ? rangePx < limitPx : rangePx <= limitPx;
 }
 
-// In motion a pair merges once the PARENT's range projects below half of flatPx at the nearest point
+// A pair merges once the PARENT's range projects below half of flatPx at the nearest point
 // of the parent's box. Both siblings rebuild that box identically (their own corners plus the reflected
 // far endpoint), so they agree; and a parent that merged reads the same box at its own split test, so it
 // stays merged. The factor of two is the band that keeps a pair whose range sits near the threshold
@@ -1189,8 +1189,14 @@ struct CBTPlanarDemand
 // metric otherwise, and the content-aware veto on either. The depth cap, the near-field occupancy gate
 // (CBT_NearFieldGateAllows) and the off-frustum gate are the caller's; nearField reports which branch
 // decided. Kernel_Classify asks it on the planar arms the criterion does not decide (CBT_PlanarCriterionOn:
-// the atlas source, a lattice without a pyramid, the narrow heap); at rest it splits at the merge end of
-// the band.
+// the atlas source, a lattice without a pyramid, the narrow heap).
+//
+// The wish uses a moving camera's thresholds while the camera holds still too. Its merges do not restate
+// the split exactly: the screen-space merge measures the parent's edge to a far corner extrapolated from
+// the child (CBT_ParentSplitEdgeFar), and the near-field merge measures the child's own edge against
+// CBT_NEAR_FIELD_MERGE_FRAC of the target. A split moved to the merge's threshold at rest makes every facet
+// whose two measures straddle that threshold split and merge on alternate updates, and the tree never
+// rests.
 //
 // Water plane: a triangle whose three corners all sit more than the margin below the calm water
 // surface is hidden by the water whenever the camera is above that surface (every view ray to it
@@ -1227,27 +1233,20 @@ bool CBT_PlanarSplitWish(CBTFrameParams fp, CBTPlanarDemand d, vec3 e0, vec3 e1,
     precise float coarsen =
         CBT_NearBiasCoarsen(fp, d.Contention, distance(0.5 * (e0 + e2), d.CamRel)) * d.PressureScale *
         submergedCoarsen;
-    // While the camera holds still (pc.settle) the wish uses the fine end of the hysteresis band the
-    // merges keep in motion: the split edge against the merge threshold restated on a parent edge
-    // (mergePx x sqrt(2)), the near-field target at CBT_NEAR_FIELD_MERGE_FRAC of itself and the flat
-    // veto at the flat merge's half. Every tree a moving camera can hold lies between the two ends, so
-    // a stop only ever adds detail and the rest mesh is never coarser than the motion mesh it replaces.
-    bool atRest = pc.settle != 0u;
-    precise float splitPx = (atRest ? fp.screen.w * CBT_LEB_PARENT_EDGE_SCALE : fp.screen.z) * coarsen;
-    float nearTargetM = atRest ? d.NearTargetM * CBT_NEAR_FIELD_MERGE_FRAC : d.NearTargetM;
+    precise float splitPx = fp.screen.z * coarsen;
     vec2 p0, p1, p2;
     bool v0In = CBT_ProjectPixelsPrecise(e0, fp, p0);
     bool v1In = CBT_ProjectPixelsPrecise(e1, fp, p1);
     bool v2In = CBT_ProjectPixelsPrecise(e2, fp, p2);
     precise float edgePx = distance(p0, p2);
     nearField = !v0In || !v2In;
-    bool wish = nearField ? CBT_NearFieldSplitWish(fp, nearTargetM, splitPx, e0, e2, d.CamRel, !v0In && !v1In && !v2In)
+    bool wish = nearField ? CBT_NearFieldSplitWish(fp, d.NearTargetM, splitPx, e0, e2, d.CamRel, !v0In && !v1In && !v2In)
                           : edgePx > splitPx;
 #if !defined(CBT_DECODE_INT32)
     if (wish && CBT_PlanarFlatTestOn(fp))
         wish = !CBT_PlanarRangeBelowPx(fp, d.Origin, d.CamRel, min(uv0, min(uv1, uv2)), max(uv0, max(uv1, uv2)),
-                                       min(e0.y, min(e1.y, e2.y)), max(e0.y, max(e1.y, e2.y)),
-                                       atRest ? 0.5 * fp.waterPlane.w : fp.waterPlane.w, false);
+                                       min(e0.y, min(e1.y, e2.y)), max(e0.y, max(e1.y, e2.y)), fp.waterPlane.w,
+                                       false);
 #endif
     return wish;
 }
@@ -2994,8 +2993,10 @@ vec4 CBT_FoldHeightPlane(uvec2 block, uint level, uint belowOffset, uvec2 belowD
 
 // Writes level k = pc.passIndex & 0xFF of the height-range pyramid (CBT_HeightRange*) and of the
 // chain levels' range pyramids, for the first pc.passIndex >> 8 chain levels (0: none; the CPU passes
-// CBTHeightChainRangeLevels when the chain is built for the bound lattice). Threads [0, N_k) write the
-// level-0 entries; each next N_k, chain level 1, 2, ... whose pyramid has level k. The first stored
+// CBTHeightChainRangeLevels when the chain is built for the bound lattice), over the blocks
+// pc.buildRegionMin + [0, pc.buildRegionExtent) of level k (the whole level, or the blocks over an edit:
+// CBTLayout.h CBTHeightRangeBlocksReading). Threads [0, R) write the level-0 entries of the region's R
+// blocks; each next R, chain level 1, 2, ... whose pyramid has level k. The first stored
 // level reads the bound height texture (every lattice sample a block's cells touch), a chain level's
 // base level reads the chain's samples whose lattice positions the block covers; each coarser level
 // folds 2 x 2 blocks of the level below. The CPU dispatches the levels in order with a barrier
@@ -3026,13 +3027,18 @@ void Kernel_HeightRangeBuild()
             gHeightRange.Range[20u + j] = CBT_ChainRangeFirstEntry(cells, first, top, j);
     }
     uvec2 levelDim = uvec2(CBT_HeightRangeDim(cells.x, level), CBT_HeightRangeDim(cells.y, level));
-    uint levelEntries = levelDim.x * levelDim.y;
+    uvec2 regionExtent = uvec2(pc.buildRegionExtent & 0xFFFFu, pc.buildRegionExtent >> 16u);
+    uint regionEntries = regionExtent.x * regionExtent.y;
     uint i = gl_GlobalInvocationID.x;
-    uint chainLevel = i / levelEntries;
+    uint chainLevel = i / regionEntries;
     if (chainLevel > chainLevels || (chainLevel > 0u && CBT_ChainRangeBase(first, top, chainLevel) > level))
         return;
-    uint e = i - chainLevel * levelEntries;
-    uvec2 block = uvec2(e % levelDim.x, e / levelDim.x);
+    uint inRegion = i - chainLevel * regionEntries;
+    uvec2 block = uvec2(pc.buildRegionMin & 0xFFFFu, pc.buildRegionMin >> 16u) +
+                  uvec2(inRegion % regionExtent.x, inRegion / regionExtent.x);
+    if (block.x >= levelDim.x || block.y >= levelDim.y)
+        return;
+    uint e = block.y * levelDim.x + block.x;
     vec2 acc = vec2(3.0e38, -3.0e38);
     uint base = chainLevel == 0u ? first : CBT_ChainRangeBase(first, top, chainLevel);
     if (level == base && chainLevel == 0u)
@@ -3136,7 +3142,7 @@ float CBT_ChainBuildSource(uint level, int x, int z, uint samplesX, uint samples
     return CBT_ChainLoad(CBT_ChainLevelWord(samplesX, samplesZ, level) + cz * sx + cx);
 }
 
-// The [1 2 1] / 4 tent across finer row `z` around coarse sample `x` (HeightPyramidBuilder's
+// The [1 2 1] / 4 tent across finer row `z` around coarse sample `x` (PagePyramidBuilder's
 // TentAcross, same order of operations).
 float CBT_ChainTentAcross(uint finer, int x, int z, uint samplesX, uint samplesZ, uint frameSlot)
 {
@@ -3149,8 +3155,8 @@ float CBT_ChainTentAcross(uint finer, int x, int z, uint samplesX, uint samplesZ
 #endif
 
 // The prefiltered height chain (cbt_height_chain.glsl): writes level pc.passIndex over the region
-// pc.heightChainRegionMin + [0, pc.heightChainRegionExtent), each sample the [1 2 1] / 4 tent of the
-// level below around sample 2j along both axes (HeightPyramidBuilder::MakeCoarserRow's order). Level
+// pc.buildRegionMin + [0, pc.buildRegionExtent), each sample the [1 2 1] / 4 tent of the
+// level below around sample 2j along both axes (PagePyramidBuilder::MakeCoarserRow's order). Level
 // 1 reads the bound height texture, each coarser level the chain; the CPU dispatches the levels in
 // order with a barrier between them. Thread 0 of level 1 writes the header. The narrow-heap arm has
 // no chain.
@@ -3173,12 +3179,12 @@ void Kernel_HeightChainBuild()
         gHeightChain.Words[0] = samplesX | (samplesZ << 16u);
         gHeightChain.Words[1] = top;
     }
-    uint width = pc.heightChainRegionExtent & 0xFFFFu;
-    uint height = pc.heightChainRegionExtent >> 16u;
+    uint width = pc.buildRegionExtent & 0xFFFFu;
+    uint height = pc.buildRegionExtent >> 16u;
     if (i >= width * height)
         return;
-    uint x = (pc.heightChainRegionMin & 0xFFFFu) + i % width;
-    uint z = (pc.heightChainRegionMin >> 16u) + i / width;
+    uint x = (pc.buildRegionMin & 0xFFFFu) + i % width;
+    uint z = (pc.buildRegionMin >> 16u) + i / width;
     uint sx = CBT_ChainSamples(samplesX, level);
     if (x >= sx || z >= CBT_ChainSamples(samplesZ, level))
         return;
@@ -3193,7 +3199,7 @@ void Kernel_HeightChainBuild()
 }
 
 // The far-field normal chain (cbt_height_chain.glsl CBT_ChainNormal): writes mip pc.passIndex over the
-// texel region pc.heightChainRegionMin + [0, pc.heightChainRegionExtent), each texel the normal of chain
+// texel region pc.buildRegionMin + [0, pc.buildRegionExtent), each texel the normal of chain
 // level mip + 1 at the texel's center. Runs after the height chain it reads; mips are independent of
 // each other. The narrow-heap arm has no chain.
 void Kernel_NormalChainBuild()
@@ -3205,13 +3211,13 @@ void Kernel_NormalChainBuild()
     uint mip = pc.passIndex;
     if (samplesX < 3u || samplesZ < 3u || mip >= CBT_NORMAL_CHAIN_MAX_MIPS)
         return;
-    uint width = pc.heightChainRegionExtent & 0xFFFFu;
-    uint height = pc.heightChainRegionExtent >> 16u;
+    uint width = pc.buildRegionExtent & 0xFFFFu;
+    uint height = pc.buildRegionExtent >> 16u;
     uint i = gl_GlobalInvocationID.x;
     if (i >= width * height)
         return;
-    uint x = (pc.heightChainRegionMin & 0xFFFFu) + i % width;
-    uint z = (pc.heightChainRegionMin >> 16u) + i / width;
+    uint x = (pc.buildRegionMin & 0xFFFFu) + i % width;
+    uint z = (pc.buildRegionMin >> 16u) + i / width;
     uint texelsX = max(((samplesX - 1u) / 2u) >> mip, 1u);
     uint texelsZ = max(((samplesZ - 1u) / 2u) >> mip, 1u);
     if (x >= texelsX || z >= texelsZ)

@@ -49,7 +49,7 @@ Convention traps that invert habits from other engines, always called out when i
 - Named functions over lambdas: a lambda is a short adapter handed to an API; anything longer, captured across a screen, defined then called once, or needed twice becomes a named function in the owning file.
 - One class per file; a file that outgrows its responsibility is split in the change that grows it. No dead code, no commented-out code, no vague TODOs, no magic numbers. Migrate old-style code on contact, never in unprompted bulk.
 - Headers: forward declarations in headers, includes in the .cpp; order own header, module headers, stdlib, third-party.
-- Comments describe the code as it is now: the invariant, the unit or coordinate convention, the trap and the rule. Never narrate history, never say what a value used to be, never address reviewers, no author or date stamps. Plain words, short sentences, a term of art only when it is the engine's own and there is no plain word for it. Doxygen on public APIs.
+- Comments are short and describe the code as it is now: the invariant, the unit or coordinate convention, the trap and the rule, in one to three lines of Simplified Technical English (the `writing-simplified-technical-english` skill: one meaning per word, active voice, short sentences, a term of art only when it is the engine's own and there is no plain word for it). Never narrate history or a change, never say what a value used to be or why a line moved, never address reviewers, no author or date stamps; a comment that explains a change instead of the code is deleted, and a long comment is cut to its invariant. Doxygen on public APIs.
 
 ## Landing a change
 
