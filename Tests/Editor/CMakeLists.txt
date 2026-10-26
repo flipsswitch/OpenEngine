@@ -35,9 +35,9 @@ set(EDITOR_TEST_SOURCES
 	SelectionOutlineContributorsTests.cpp
 	SceneViewFarPlaneTests.cpp
 	SceneViewCameraRigTests.cpp
-	TerrainPickingRayTests.cpp
-	ScenePickTerrainInclusionTests.cpp
-	MeshPickingPendingBvhTests.cpp
+	ScenePickPendingBvhTests.cpp
+	SplineConformHoldTests.cpp
+	TerrainBrushPlanetCastTests.cpp
 	UndoRedoServiceTests.cpp
 	PlayModeChangeReviewTests.cpp
 	PlayModeMarkupNotesTests.cpp
@@ -57,8 +57,8 @@ set(EDITOR_TEST_SOURCES
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Assets/TexturePreparingStatusItem.cpp
 	ScriptVariablesEmptyStateTests.cpp
 	OnDiskFileNameTests.cpp
-	MeshBvhDiskFormatTests.cpp
 	EntityDuplicateTests.cpp
+	SplineNetworkUndoTests.cpp
 	DefaultSceneEntitiesTests.cpp
 	NewSceneSeedTests.cpp
 	SceneViewExposureTests.cpp
@@ -91,7 +91,7 @@ set(EDITOR_TEST_SOURCES
 	# Draped spline display polylines (centerline + width envelope) against the
 	# shared conform ray. The drape TU shares CenterSample/HoldSurfaceAcrossGaps
 	# and the world-length scaling with the placement leaf TUs below;
-	# MeshPickingService/TerrainPicking below provide the raycast.
+	# the engine's SceneRaycast provides the raycast.
 	SplineDrapeTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/SceneView/SplineDrapePolylines.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Placement/SplineSurfaceConform.cpp
@@ -156,6 +156,9 @@ set(EDITOR_TEST_SOURCES
 	# with no device and a bare world.
 	SplineChunkCommitTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Placement/SplineChunkCommit.cpp
+	# The extrude controller's hold over a mesh still preparing its picking data
+	# (SplineConformHoldTests), driven on RenderServices with no device.
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Placement/SplineExtrudeController.cpp
 	# The fence's cut span variants from the layout's plan to the registry: the
 	# unit SplineFenceController::Rebuild hands its plan to, on a registry with
 	# no device — dedupe, stable keys, release, the byte budget, open meshes.
@@ -659,16 +662,11 @@ set(EDITOR_TEST_SOURCES
 	# The Script Errors panel's rows kept per assembly; a leaf over the
 	# compile-server diagnostic type, same compile-the-source pattern.
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Panels/ScriptDiagnosticsByAssembly.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Picking/MeshBvhDiskFormat.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Picking/TerrainPicking.cpp
-	# The scene pick entry points (ScenePickTerrainInclusionTests) plus the two leaf TUs
-	# they own outright. EditorPickProviderRegistry is deliberately NOT compiled in — it
-	# ships in EditorSDK.dll (linked below), so a second copy here would clone the
-	# registry singleton (issue #356 disease).
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Picking/MeshPickingService.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Picking/MeshBvhCache.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Picking/PrimitiveMeshes.cpp
-	# The Scene View drop queries over the picks (MeshPickingPendingBvhTests).
+	# The editor's pick over the engine raycast (ScenePickPendingBvhTests). EditorPickProviderRegistry
+	# is deliberately NOT compiled in: it ships in EditorSDK.dll (linked below), so a second copy
+	# here would clone the registry singleton (issue #356 disease).
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Picking/ScenePick.cpp
+	# The Scene View drop queries over the picks (ScenePickPendingBvhTests).
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/SceneView/SceneViewDropPlacement.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/SceneView/SceneViewFraming.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/SceneView/SceneViewProjection.cpp
@@ -714,6 +712,7 @@ set(EDITOR_TEST_SOURCES
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/SceneView/SplineTool.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/SceneView/SplineSceneGizmo.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UndoRedo/SplinePointEdits.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UndoRedo/SplineNetworkRecordCommand.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/SceneView/SceneViewTransformTool.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/SceneView/SceneViewSelectionTool.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/AnimationPreviewManager.cpp
@@ -962,6 +961,8 @@ set(EDITOR_TEST_SOURCES
 	# Source-level guard on the other half of that panel: its sections are bars, which only
 	# happens while the class it asks for and the rule that answers it both exist.
 	TerrainInspectorSectionStyleTests.cpp
+	# The component color row on a ColorLinear member: apply, alpha kept, undo.
+	InspectorComponentColorRowTests.cpp
 	# The grass inspector's Root Color row (Auto or authored), built in process over a live
 	# World with a stub colour picker. The terrain panel's inspectors register from one TU.
 	TerrainGrassRootColorRowTests.cpp
@@ -1678,8 +1679,9 @@ add_test(NAME PanelDeferredBindLatchTests
 
 # The project picker's network jobs on their channels: the community catalog fetch and a
 # project acquisition hold no compute worker, and the catalog service's destructor waits for a
-# fetch in flight; and the startup scene a project opens on and is given when created, for every
-# built-in template too, plus real loads of the staged template scenes. Its own target because it points
+# fetch in flight; a zip source's inner-folder extraction; and the startup scene a project opens
+# on and is given when created, for every built-in template too, plus real loads of the staged
+# template scenes. Its own target because it points
 # GE_EDITOR_USER_DATA_ROOT at a scratch preferences file for the whole process.
 add_executable(ProjectPickerJobTests
 	ProjectCatalogServiceTests.cpp
@@ -1694,33 +1696,19 @@ add_executable(ProjectPickerJobTests
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Projects/ProjectAcquisition.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Projects/ProjectStartupScene.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Projects/SubprocessStream.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Projects/ZipArchive.cpp
-	${CMAKE_SOURCE_DIR}/Engine/Source/ThirdParty/miniz/miniz.c
-	${CMAKE_SOURCE_DIR}/Engine/Source/ThirdParty/miniz/miniz_tdef.c
-	${CMAKE_SOURCE_DIR}/Engine/Source/ThirdParty/miniz/miniz_tinfl.c
-	${CMAKE_SOURCE_DIR}/Engine/Source/ThirdParty/miniz/miniz_zip.c
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/ZipArchiveReader.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/SettingsStore.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/EditorPaths.cpp
 )
 target_include_directories(ProjectPickerJobTests PRIVATE
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Include
-	${CMAKE_SOURCE_DIR}/Engine/Source/ThirdParty/miniz
 	${CMAKE_SOURCE_DIR}/Engine/Tests
 )
 target_compile_definitions(ProjectPickerJobTests PRIVATE
 	GE_EDITOR_SOURCE_DIR="${CMAKE_SOURCE_DIR}/Apps/Editor")
-# The vendored miniz sources are third-party C; source properties are scoped to the
-# directory that sets them, so the Editor's /w does not reach this target's copies.
-if(MSVC)
-	set_source_files_properties(
-		${CMAKE_SOURCE_DIR}/Engine/Source/ThirdParty/miniz/miniz.c
-		${CMAKE_SOURCE_DIR}/Engine/Source/ThirdParty/miniz/miniz_tdef.c
-		${CMAKE_SOURCE_DIR}/Engine/Source/ThirdParty/miniz/miniz_tinfl.c
-		${CMAKE_SOURCE_DIR}/Engine/Source/ThirdParty/miniz/miniz_zip.c
-		PROPERTIES COMPILE_OPTIONS "/w")
-endif()
 target_link_libraries(ProjectPickerJobTests PRIVATE
 	Engine
+	EditorMiniz
 	GTest::gtest
 	GTest::gtest_main
 )
@@ -1736,6 +1724,37 @@ add_test(NAME ProjectPickerJobTests
 	COMMAND "${CMAKE_COMMAND}"
 		-DTEST_EXE=$<TARGET_FILE:ProjectPickerJobTests>
 		-DTEST_WORKING_DIR=$<TARGET_FILE_DIR:ProjectPickerJobTests>
+		-P "${CMAKE_SOURCE_DIR}/cmake/RunTestExecutable.cmake"
+)
+
+# The zip reader through the EditorSDK export package modules link: archives on disk and in
+# memory, listing, chosen-entry extraction, unsafe entry names and malformed archives (truncated,
+# overlapping, oversized and repeated entries). The test writes its archives with its own link
+# of the miniz library; the SDK exports none of it.
+add_executable(ZipArchiveReaderTests
+	ZipArchiveReaderTests.cpp
+)
+target_include_directories(ZipArchiveReaderTests PRIVATE
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Include
+)
+target_link_libraries(ZipArchiveReaderTests PRIVATE
+	Engine
+	EditorSDK
+	EditorMiniz
+	GTest::gtest
+	GTest::gtest_main
+)
+set_target_properties(ZipArchiveReaderTests PROPERTIES
+	CXX_STANDARD 20
+	CXX_STANDARD_REQUIRED ON
+	VCPKG_APPLOCAL_DEPS OFF
+)
+ge_set_output_tests(ZipArchiveReaderTests)
+ge_stage_runtime_dependencies(ZipArchiveReaderTests)
+add_test(NAME ZipArchiveReaderTests
+	COMMAND "${CMAKE_COMMAND}"
+		-DTEST_EXE=$<TARGET_FILE:ZipArchiveReaderTests>
+		-DTEST_WORKING_DIR=$<TARGET_FILE_DIR:ZipArchiveReaderTests>
 		-P "${CMAKE_SOURCE_DIR}/cmake/RunTestExecutable.cmake"
 )
 
@@ -1842,8 +1861,10 @@ add_test(NAME GameViewPointerDeliveryTests
 
 # Actual controller input uses the last presented extent and world scope without
 # creating a GPU device; camera readback uses a headless device in a separate fixture.
+# The movie capture's recording status runs without a device.
 add_executable(GameViewControllerInputTests
 	GameViewControllerInputTests.cpp
+	GameViewMovieCaptureTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/GameViewController.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/GameViewMovieCapture.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Settings/ProjectUIScaleBinding.cpp
@@ -1952,8 +1973,6 @@ set_target_properties(EditorTests PROPERTIES VCPKG_APPLOCAL_DEPS OFF)
 #   (UI is an OBJECT module spliced into Engine.dll — linking it here as well
 #   would give the exe a second copy of its file-scope state, issue #356, same
 #   disease as #340; symbols resolve through Engine's export table).
-# - MeshPicking is editor-only and NOT part of Engine.dll, so the exe-local
-#   copy is the only copy in the process — a direct link is the correct home.
 # - EditorSDK carries the editor extension registries (InspectorRegistry,
 #   EditorPluginRegistry, component traits, pick providers) the compiled-in
 #   editor sources dispatch through. Link it — NEVER compile its sources into
@@ -1993,7 +2012,6 @@ target_link_libraries(EditorTests
     PRIVATE
 	    Engine
 	    EditorSDK
-	    MeshPicking
 	    SharedHeadlessDeviceTestSupport
     GTest::gtest
     GTest::gtest_main
@@ -2069,6 +2087,13 @@ if(TARGET EditorTests)
 	ge_stage_test_asset(EditorTests
 	    "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/Graph/graph-ported-node.uxml"
 	    "Assets/UI/Graph/graph-ported-node.uxml")
+
+	# Layout measurements must use the shipped faces, not platform fallback metrics.
+	foreach(_face IN ITEMS Roboto-Regular.ttf Roboto-Medium.ttf Roboto-Bold.ttf)
+	    ge_stage_test_asset(EditorTests
+	        "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/Fonts/${_face}"
+	        "Assets/Fonts/${_face}")
+	endforeach()
 
 	# InspectorNotice builds its plate, text and action from its layout, read
 	# from the same install-assets root.

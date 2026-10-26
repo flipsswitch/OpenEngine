@@ -331,8 +331,11 @@ void SplineFenceController::Update(ECS::World& world,
                                       candidate.Entity.id))
             continue;
 
+        state.Hold.Held = false;
         if (Rebuild(world, *renderServices, candidate, state))
             worldDirty = true;
+        if (state.Hold.Held)
+            continue;
         // The rebuild registered its pools and released variants, which moves
         // the digest without any content changing: take it as built.
         state.PoolContent = PoolContentOf(meshRegistry, current.Recipe);
@@ -576,9 +579,11 @@ bool SplineFenceController::Rebuild(ECS::World& world,
     layout.OutTiltClamp = &tiltClamp;
 
     const FenceLayoutResult built = BuildFenceLayout(center, layout);
-    state.RunSpanCounts = built.RunSpanCounts;
     // Every conform ray for this rebuild has now been cast (the centerline drape plus
     // BuildFenceLayout's per-station probes), so the tally is complete.
+    if (HoldForPendingBvh(conformMisses, candidate.Entity.id, state.Hold))
+        return false;
+    state.RunSpanCounts = built.RunSpanCounts;
     ReportConformMisses(conformMisses, candidate.Entity.id, state.LoggedConformMisses);
     ReportTiltClamp(tiltClamp, candidate.Entity.id, layout.MaxTiltDegrees, state.LoggedTiltClamps);
     ReportSpanRollBorrowed(built.RollBorrowedSpans, candidate.Entity.id,

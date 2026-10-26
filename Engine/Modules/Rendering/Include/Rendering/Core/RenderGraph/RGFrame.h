@@ -812,6 +812,9 @@ class RGFrame
     std::vector<uint8_t> m_HasPhysical;
     RGTexture m_Backbuffer{}; // this frame's ImportBackbuffer result (IsBackbuffer)
 
+    // The value each physical queue's timeline has signaled so far (0 before its first submit).
+    void ReadCompletedTimelineValues(uint64_t (&outValues)[kQueueCount]) const;
+
     // Recording state (persistent CLs per logical queue; Begin() re-acquires a
     // fresh buffer per submission) + per-physical-queue timeline semaphores.
     std::unique_ptr<CommandList> m_CmdLists[kQueueCount];

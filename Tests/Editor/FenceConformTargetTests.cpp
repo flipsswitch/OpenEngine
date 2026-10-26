@@ -43,6 +43,7 @@
 
 #include "Components/Rendering/LocalBounds.h"
 #include "Components/Rendering/MeshRenderer.h"
+#include "Engine/Rendering/PrimitiveGenerator.h"
 #include "Components/Spline/SplineFence.h"
 #include "Components/Terrain/Terrain.h"
 #include "Components/Transform.h"
@@ -164,20 +165,26 @@ class FenceConformTargetTests : public ::testing::Test
 
     // A canopy overhanging the second half of the run: the Party Tree's shape in
     // miniature. It stands clear of the fence line and is reachable only from
-    // above, so nothing but a down-ray that accepts scenery can land on it.
+    // above, so nothing but a down-ray that accepts scenery can land on it. It is the
+    // built-in unit cube scaled to the canopy's box: a renderer with a CPU mesh, the
+    // only kind of renderer a conform ray lands on.
     static void CreateCanopyOver(World& world, float centerX, float halfX)
     {
         Entity canopy = world.Create();
         GameEngine::Components::MeshRenderer renderer{};
+        renderer.modelAssetGuid.Set(GameEngine::Engine::Renderer::PrimitiveGenerator::CubeGuid());
         canopy.Set(renderer);
 
         const float halfY = 2.0f;
         GameEngine::Components::LocalBounds bounds{};
         bounds.Box.center = {0.0f, 0.0f, 0.0f};
-        bounds.Box.halfExtents = {halfX, halfY, 4.0f};
+        bounds.Box.halfExtents = {0.5f, 0.5f, 0.5f};
         canopy.Set(bounds);
 
         WorldTransform xf{};
+        xf.matrix[0] = 2.0f * halfX;
+        xf.matrix[5] = 2.0f * halfY;
+        xf.matrix[10] = 8.0f;
         xf.matrix[12] = centerX;
         xf.matrix[13] = kCanopyTopY - halfY;
         xf.matrix[14] = 0.0f;
