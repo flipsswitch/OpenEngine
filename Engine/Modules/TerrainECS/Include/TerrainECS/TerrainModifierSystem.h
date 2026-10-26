@@ -551,7 +551,7 @@ public:
     // saved as `savedScene` (the editor's save step). Restamps the document's own
     // terrains, those whose Terrain.BakeOriginScene is `previousScene` or null, with
     // `savedScene` (a Save As, or a first save, moves them to the new scene's identity);
-    // a terrain from a subscene or a blueprint keeps the nested file's identity, which a
+    // a terrain from a subscene or a prefab keeps the nested file's identity, which a
     // load stamps and a save of the parent leaves unchanged. Then asks the first settled
     // update to store each of the document's single terrains under its current key and
     // to prune the saved scene's cache folder to them (TerrainBakeCache.h). Settled means no

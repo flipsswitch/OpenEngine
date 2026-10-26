@@ -731,9 +731,10 @@ float CBT_AtlasCoarseSample(vec2 uv, float coarseDim, uint frameSlot)
 // Binding 22: the page table, a host-visible ring of equal slots, one per frame slot, written whole
 // when the terrain's table changes (the binding-17 ring discipline); the words per slot ride this
 // frame's params (analyticParams lane CBT_PAGE_RING_WORDS_LANE), never a word of another slot.
-// Layout (mirror CBTLayout.h): [0, 4) CBTPageField, [4] the cache's slot count, [5, 8) zero,
-// [8, 8 + 4 * CBT_PAGE_MAX_LEVELS) one CBTPageLevel per
-// level, then one arrival fade per cache slot (float bits), then the entries.
+// Layout (mirror CBTLayout.h): [0, 4) CBTPageField's shape, [4] the cache's slot count, [5, 8) the
+// floor level, the tier count and the floor directory's offset (all 0 for a dense table),
+// [8, 8 + 4 * CBT_PAGE_MAX_LEVELS) one CBTPageLevel per level, then one arrival fade per cache slot
+// (float bits), then the table's words (TerrainECS PageTable).
 #define CBT_PAGE_HEADER_WORDS 8u
 #define CBT_PAGE_MAX_LEVELS 32u
 #define CBT_PAGE_FADE_OFFSET (CBT_PAGE_HEADER_WORDS + 4u * CBT_PAGE_MAX_LEVELS)
@@ -803,10 +804,11 @@ layout(push_constant) uniform CBTPushConstants
     // Only VertexEval reads it (selects what to WRITE); consumers branch on the per-slot deepTag.
     uint deepDecode;
     uint poolPressure; // 1 = planar pool-pressure scale on; 0 = the A/B arm (tests), scale held at 1x
-    // Kernel_HeightChainBuild's region at level passIndex: first sample (x | z << 16), extent
-    // (width | height << 16). Only that kernel reads them.
-    uint heightChainRegionMin;
-    uint heightChainRegionExtent;
+    // The height build kernels' region at level passIndex (mirror CBTPushConstants::BuildRegionMin): first
+    // element (x | z << 16), extent (width | height << 16); samples for Kernel_HeightChainBuild, texels for
+    // Kernel_NormalChainBuild, blocks for Kernel_HeightRangeBuild. Only they read them.
+    uint buildRegionMin;
+    uint buildRegionExtent;
     // The rest rule (mirror CBTPushConstants::Settle). 1 = every input matches the previous update's:
     // Kernel_Classify's planar split and merge use one threshold (CBT_PlanarClassify). Classify and
     // Kernel_Reset's live-count latch read it.
@@ -1042,7 +1044,7 @@ uint CBT_PageRingBase()
     return slot * uint(gParams.Params[slot].frame.analyticParams[CBT_PAGE_RING_WORDS_LANE]);
 }
 
-uint CBT_PageTableEntry(uint index)
+uint CBT_PageTableWord(uint index)
 {
     uint base = CBT_PageRingBase();
     return gPageTable.Words[base + CBT_PAGE_FADE_OFFSET + gPageTable.Words[base + 4u] + index];
@@ -1079,6 +1081,10 @@ CBTPageField CBT_PageFieldOfFrame()
     field.Level0SamplesZ = gPageTable.Words[base + 1u];
     field.LevelCount = gPageTable.Words[base + 2u];
     field.SlotsPerRow = gPageTable.Words[base + 3u];
+    field.FloorLevel = gPageTable.Words[base + 5u];
+    field.TierCount = gPageTable.Words[base + 6u];
+    field.DirectoryOffset = gPageTable.Words[base + 7u];
+    field.Pad = 0u;
     return field;
 }
 #endif

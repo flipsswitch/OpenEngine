@@ -1,6 +1,6 @@
 #include "PageStreaming/PageStoreWriter.h"
 
-#include "PageStreaming/HeightPageCodec.h"
+#include "PageCodec.h"
 #include "NonInheritedFile.h"
 #include "PageStoreSerialization.h"
 
@@ -34,6 +34,7 @@ std::string PageStoreWriter::Create(const std::filesystem::path& target, PageSto
     Abandon();
     if (layout.Levels.empty() || layout.Entries.empty())
         return "the page store has no levels";
+    m_End = layout.DataOffset();
     std::error_code ec;
     std::filesystem::create_directories(target.parent_path(), ec);
     m_Target = target;
@@ -59,6 +60,7 @@ std::string PageStoreWriter::OpenForPatch(const std::filesystem::path& existing,
     m_File = OpenNonInheritedFile(m_Temp, NonInheritedFileMode::OpenReadWrite);
     if (!m_File)
         return "the previous page store could not be opened for patching";
+    m_End = layout.TotalBytes();
     m_Layout = std::move(layout);
     m_Failed = false;
     return {};
@@ -66,12 +68,25 @@ std::string PageStoreWriter::OpenForPatch(const std::filesystem::path& existing,
 
 bool PageStoreWriter::WritePage(const PageAddress& address, const EncodedPage& page)
 {
-    const std::optional<std::size_t> index = m_Layout.EntryIndex(address);
-    if (!index || !m_Layout.Entries[*index].IsPresent() || page.Bytes.size() != m_Layout.Entries[*index].Size)
+    const std::optional<std::size_t> index = m_Layout.PresentIndex(address);
+    const bool wide = (page.Flags & kPageWideWords) != 0;
+    if (!index || page.Bytes.size() != PageStoredBytes(m_Layout.Header.Format, wide) ||
+        (wide && m_Layout.Header.Format != PageFieldFormat::HeightSteps))
         return false;
     PageIndexEntry& entry = m_Layout.Entries[*index];
-    if (!WriteAt(entry.Offset, page.Bytes.data(), page.Bytes.size()))
-        return false;
+    {
+        // A page keeps its slot while its size does; a new page, or one whose size changed, goes at
+        // the end of the store (a patch leaves the old slot's bytes unused).
+        std::lock_guard lock(m_FileMutex);
+        if (entry.Offset == 0 || m_Layout.StoredBytes(entry) != page.Bytes.size())
+        {
+            entry.Offset = m_End;
+            m_End += page.Bytes.size();
+        }
+        entry.Flags = page.Flags;
+        if (!WriteAtLocked(entry.Offset, page.Bytes.data(), page.Bytes.size()))
+            return false;
+    }
     // Distinct pages own distinct entries; the entry is read only after the writers are joined.
     entry.Hash = page.Hash;
     entry.MinWord = page.MinWord;
@@ -82,9 +97,9 @@ bool PageStoreWriter::WritePage(const PageAddress& address, const EncodedPage& p
 bool PageStoreWriter::ReadPage(const PageAddress& address, std::vector<uint8>& outBytes)
 {
     const PageIndexEntry* entry = m_Layout.FindPresent(address);
-    if (!entry)
+    if (!entry || entry->Offset == 0)
         return false;
-    outBytes.resize(entry->Size);
+    outBytes.resize(m_Layout.StoredBytes(*entry));
     return ReadAt(entry->Offset, outBytes.data(), outBytes.size());
 }
 
@@ -92,6 +107,12 @@ std::string PageStoreWriter::Finish()
 {
     if (!m_File)
         return "no page store is being written";
+    for (const PageIndexEntry& entry : m_Layout.Entries)
+        if (entry.Offset == 0)
+        {
+            Abandon();
+            return "the page store was finished with a present page never written";
+        }
     const std::vector<uint8> head = SerializePageStoreHead(m_Layout);
     const bool written = !m_Failed && WriteAt(0, head.data(), head.size()) && std::fflush(m_File) == 0;
     const bool closed = std::fclose(m_File) == 0;
@@ -128,6 +149,11 @@ void PageStoreWriter::Abandon()
 bool PageStoreWriter::WriteAt(uint64 offset, const void* data, std::size_t bytes)
 {
     std::lock_guard lock(m_FileMutex);
+    return WriteAtLocked(offset, data, bytes);
+}
+
+bool PageStoreWriter::WriteAtLocked(uint64 offset, const void* data, std::size_t bytes)
+{
     const bool ok = m_File && Seek(m_File, offset) && std::fwrite(data, 1, bytes, m_File) == bytes;
     m_Failed = m_Failed || !ok;
     return ok;

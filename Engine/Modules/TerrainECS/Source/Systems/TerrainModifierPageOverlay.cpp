@@ -6,6 +6,7 @@
 #include "TerrainRowBands.h"
 
 #include "PageStreaming/HeightPageOverlay.h"
+#include "PageStreaming/PageSampleRect.h"
 #include "PageStreaming/PageStoreFormat.h"
 
 #include <algorithm>
@@ -68,12 +69,6 @@ std::optional<PageSampleRect> LatticeRect(const TileLattice& lattice, float32 mi
     rect.MaxX = static_cast<uint32>(std::min(lastX, lattice.SamplesX - 1.0));
     rect.MaxZ = static_cast<uint32>(std::min(lastZ, lattice.SamplesZ - 1.0));
     return rect;
-}
-
-PageSampleRect Union(const PageSampleRect& a, const PageSampleRect& b)
-{
-    return PageSampleRect{std::min(a.MinX, b.MinX), std::min(a.MinZ, b.MinZ), std::max(a.MaxX, b.MaxX),
-                          std::max(a.MaxZ, b.MaxZ)};
 }
 
 std::optional<PageSampleRect> Intersect(const PageSampleRect& a, const PageSampleRect& b)
@@ -247,9 +242,20 @@ void TerrainModifierSystem::BakeHeightPageOverlay(TiledTerrainData& tiled, float
     }
     else
     {
-        PageSampleRect changed = previous ? Union(previous->Level0Rect(), bake) : bake;
-        if (dirty)
-            changed = Union(changed, *dirty);
+        // A rebuild that keeps the previous overlay's deltas changes only the dirty rect: a sample
+        // outside it keeps its delta, and a sample the new reach gains or drops holds a delta on
+        // neither side unless a dirty modifier reaches it. The whole area changes for a full bake,
+        // a first overlay, an overlay rebuilt while the previous one is not current, a new rect
+        // that does not overlap the previous one and a rebuild with no dirty rect.
+        PageSampleRect changed;
+        if (kept && dirty)
+            changed = *dirty;
+        else
+        {
+            changed = previous ? Union(previous->Level0Rect(), bake) : bake;
+            if (dirty)
+                changed = Union(changed, *dirty);
+        }
         PublishPageOverlay(
             tiled, std::make_shared<PageStreaming::HeightPageOverlay>(levels, bake, std::move(delta)), changed);
     }
