@@ -9,6 +9,7 @@
 // are EXACT in that regime and only approximate with relief — a test that runs flat-only can assert
 // the exact form and look green while saying nothing about production, which ships heightScale 60.
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <vector>
@@ -57,7 +58,9 @@ inline float ReliefHeightAt(float u, float v)
     return sum / norm;
 }
 
-inline Rendering::TextureHandle MakeReliefHeightTexture(Rendering::IDevice& device, uint32_t dim)
+// A dim x dim R32_FLOAT texture holding `data` (row-major, dim * dim values), ready to sample.
+inline Rendering::TextureHandle MakeR32Texture(Rendering::IDevice& device, uint32_t dim, const std::vector<float>& data,
+                                               const char* debugName)
 {
     using namespace Rendering;
     TextureDesc td{};
@@ -67,23 +70,14 @@ inline Rendering::TextureHandle MakeReliefHeightTexture(Rendering::IDevice& devi
     td.usage = static_cast<uint32_t>(TextureUsage::ShaderResource) |
                static_cast<uint32_t>(TextureUsage::TransferDst);
     td.persistent = true;
-    td.debugName = "CBT.Test.Relief";
+    td.debugName = debugName;
     TextureHandle tex = device.CreateTexture(td);
     if (!tex.IsValid())
         return tex;
 
-    std::vector<float> data(static_cast<size_t>(dim) * dim);
-    for (uint32_t y = 0; y < dim; ++y)
-        for (uint32_t x = 0; x < dim; ++x)
-        {
-            const float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(dim);
-            const float v = (static_cast<float>(y) + 0.5f) / static_cast<float>(dim);
-            data[static_cast<size_t>(y) * dim + x] = ReliefHeightAt(u, v);
-        }
-
     const size_t bytes = data.size() * sizeof(float);
     const size_t rowPitch = static_cast<size_t>(dim) * sizeof(float);
-    BufferHandle staging = device.CreateUploadBuffer(bytes, "CBT.Test.ReliefStaging");
+    BufferHandle staging = device.CreateUploadBuffer(bytes, "CBT.Test.R32Staging");
     device.UpdateBuffer(staging, 0, bytes, data.data());
     auto cl = device.CreateCommandList(IDevice::QueueType::Graphics);
     cl->Begin();
@@ -97,6 +91,19 @@ inline Rendering::TextureHandle MakeReliefHeightTexture(Rendering::IDevice& devi
     device.WaitForIdle();
     device.DestroyBuffer(staging);
     return tex;
+}
+
+inline Rendering::TextureHandle MakeReliefHeightTexture(Rendering::IDevice& device, uint32_t dim)
+{
+    std::vector<float> data(static_cast<size_t>(dim) * dim);
+    for (uint32_t y = 0; y < dim; ++y)
+        for (uint32_t x = 0; x < dim; ++x)
+        {
+            const float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(dim);
+            const float v = (static_cast<float>(y) + 0.5f) / static_cast<float>(dim);
+            data[static_cast<size_t>(y) * dim + x] = ReliefHeightAt(u, v);
+        }
+    return MakeR32Texture(device, dim, data, "CBT.Test.Relief");
 }
 
 // Owns the relief texture for one arm and binds it to every ring slot, so any frame index samples
@@ -137,6 +144,71 @@ class ReliefHeightSource
   private:
     Rendering::IDevice* m_Device = nullptr;
     Rendering::TextureHandle m_Texture;
+};
+
+// The same relief through the atlas height source: one resident slot of tileRes x tileRes samples (sample
+// i at UV i / (tileRes - 1), so the slot spans the terrain corner to corner) with a one-sample apron, and
+// one indirection row. The atlas source keeps the screen-space edge rule (CBT_PlanarCriterionOn is false
+// when AtlasParams1.z is 1), so a test arms the edge rule on relief by binding this and calling Apply on its
+// frame params.
+class ReliefAtlasSource
+{
+  public:
+    ReliefAtlasSource(Rendering::IDevice& device, CBTInstance& instance, uint32_t tileRes) : m_TileRes(tileRes)
+    {
+        const uint32_t dim = tileRes + 2u;
+        std::vector<float> atlas(static_cast<size_t>(dim) * dim);
+        const float last = static_cast<float>(tileRes - 1u);
+        for (uint32_t z = 0; z < dim; ++z)
+            for (uint32_t x = 0; x < dim; ++x)
+            {
+                // The apron repeats the edge sample, so the bilinear tap at the slot's edge is clamped.
+                const uint32_t sx = std::min(std::max(x, 1u), tileRes) - 1u;
+                const uint32_t sz = std::min(std::max(z, 1u), tileRes) - 1u;
+                atlas[static_cast<size_t>(z) * dim + x] =
+                    ReliefHeightAt(static_cast<float>(sx) / last, static_cast<float>(sz) / last);
+            }
+        m_Texture = MakeR32Texture(device, dim, atlas, "CBT.Test.ReliefAtlas");
+        if (!m_Texture.IsValid())
+            return;
+        m_Device = &device;
+        // One resident row: slot 0, generation 1, no LOD bias.
+        const uint32_t row[4] = {0u, 1u, 0u, 0u};
+        static_assert(sizeof(row) == kAtlasRowBytes);
+        for (uint32_t slot = 0; slot < kCBTFrameParamsRing; ++slot)
+        {
+            instance.SetAtlasSource(slot, m_Texture);
+            instance.UploadAtlasRows(slot, row, 1u);
+        }
+    }
+    ReliefAtlasSource(const ReliefAtlasSource&) = delete;
+    ReliefAtlasSource& operator=(const ReliefAtlasSource&) = delete;
+    ~ReliefAtlasSource()
+    {
+        if (m_Device && m_Texture.IsValid())
+            m_Device->DestroyTexture(m_Texture);
+    }
+
+    bool IsArmed() const { return m_Device != nullptr; }
+
+    // The atlas geometry CBTRenderFeature writes for a one-tile atlas with the whole tile resident.
+    void Apply(CBTFrameParams& p) const
+    {
+        const float dim = static_cast<float>(m_TileRes + 2u);
+        p.AtlasParams0[0] = dim;
+        p.AtlasParams0[1] = dim;
+        p.AtlasParams0[2] = 1.0f;
+        p.AtlasParams0[3] = static_cast<float>(m_TileRes);
+        p.AtlasParams1[0] = 1.0f;
+        p.AtlasParams1[1] = 1.0f;
+        p.AtlasParams1[2] = 1.0f; // the atlas height source
+        p.AtlasParams1[3] = 0.0f; // no coarse field: the tile is resident
+    }
+
+  private:
+    Rendering::IDevice* m_Device = nullptr;
+    Rendering::TextureHandle m_Texture;
+    uint32_t m_TileRes = 0;
 };
 
 } // namespace GameEngine::CBTTerrain::Test
