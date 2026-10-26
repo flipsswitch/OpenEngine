@@ -228,9 +228,13 @@ void SplineExtrudeController::Update(ECS::World& world,
                                       deltaSeconds, candidate.Entity.id))
             continue;
 
+        state.Hold.Held = false;
+
         if (Rebuild(world, *renderServices, candidate, state))
             worldDirty = true;
-        state.Gate.MarkBuilt(current);
+
+        if (!state.Hold.Held)
+            state.Gate.MarkBuilt(current);
     }
 
     for (auto it = m_States.begin(); it != m_States.end();)
@@ -371,6 +375,8 @@ bool SplineExtrudeController::Rebuild(ECS::World& world,
     if (conform)
         DrapeInsertedSamples(samples, worldM, center);
     HoldSurfaceAcrossGaps(center);
+    if (HoldForPendingBvh(conformMisses, candidate.Entity.id, state.Hold))
+        return false;
     ReportConformMisses(conformMisses, candidate.Entity.id, state.LoggedConformMisses);
 
     for (CenterSample& sample : center)

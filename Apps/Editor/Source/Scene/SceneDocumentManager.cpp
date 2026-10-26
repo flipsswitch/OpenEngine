@@ -386,7 +386,7 @@ bool SceneDocumentManager::OpenSceneFromFile(const std::filesystem::path& conten
         // Two different worlds can be live here. Read, parse, include expansion
         // and validation all run BEFORE World::Clear, so those failures leave the
         // outgoing scene intact. Failures the loader cannot continue past — an
-        // unreadable blueprint, a bad remove directive, entity creation — happen
+        // unreadable prefab, a bad remove directive, entity creation — happen
         // AFTER it, and leave a partially-applied incoming scene in the world.
         // A component or field that will not apply is NOT one of these: it is
         // collected into the degradation census and skipped, and the load

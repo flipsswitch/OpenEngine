@@ -10,7 +10,6 @@
 //   carriage-returns     "a<CR>b<CR><LF>c<LF>" on stdout, bytes exactly as written
 //   report <names...>    prints "cwd=<working directory>", then [NAME=value] or [NAME unset] per name
 //   sleep                prints "sleeping", then sleeps 30 s
-//   sleep-closed-streams <ms> prints "closing", closes stdout/stderr, then sleeps <ms>
 //   holds <handle> <event>   Windows: "holds=1" when <handle> (a decimal handle value)
 //                        names the event <event>, else "holds=0"
 //   stdin-holder <ms>    Windows: starts a copy of itself in "linger <ms>" that inherits
@@ -129,14 +128,6 @@ int Linger(unsigned long long milliseconds)
     return 0;
 }
 
-int SleepWithClosedStreams(unsigned long long milliseconds)
-{
-    std::fputs("closing\n", stdout);
-    std::fclose(stdout);
-    std::fclose(stderr);
-    return Linger(milliseconds);
-}
-
 #if defined(_WIN32)
 // An inherited handle keeps its value in the child, so the parent passes the value
 // and the event's name; CompareObjectHandles tells whether both name one object.
@@ -213,8 +204,6 @@ int main(int argc, char** argv)
         return Report(argc, argv);
     if (mode == "sleep")
         return Sleep();
-    if (mode == "sleep-closed-streams" && argc == 3)
-        return SleepWithClosedStreams(std::strtoull(argv[2], nullptr, 10));
     if (mode == "linger" && argc == 3)
         return Linger(std::strtoull(argv[2], nullptr, 10));
 #if defined(_WIN32)

@@ -1095,7 +1095,7 @@ bool PlayerApplication::EnsureMovieRecorder(uint32_t width, uint32_t height)
     *m_MovieOptions = options;
     const bool bitrateCodec = options.codec == Video::VideoCodec::H264 || options.codec == Video::VideoCodec::HEVC;
     const std::string bitrateText = bitrateCodec
-                                        ? (options.bitrateKbps > 0 ? std::to_string(options.bitrateKbps) + " Kbps" : "encoder-default")
+                                        ? (options.bitrateKbps > 0 ? std::to_string(options.bitrateKbps) + " Kbps" : "constant-quality")
                                         : "profile-driven";
     Logger::Log::Info(
         "Player: Writing movie '{}' ({}x{} @ {} fps, codec={}, bitrate={}, audio={}, hardware={})",

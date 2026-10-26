@@ -1281,8 +1281,8 @@ TEST_F(SceneTlasFixture, ConcurrentTraverseAcrossMultiSectorIsSafe)
 // ===========================================================================
 //
 // These tests exercise picker-shaped flows across multiple TLAS features
-// without launching the editor binary. They mimic the patterns the editor's
-// MeshPickingService runs during click-pick, drop-placement, marquee
+// without launching the editor binary. They mimic the patterns the scene
+// raycast (SceneRaycast) runs during click-pick, drop-placement, marquee
 // selection, and hot-reload — but limited to the engine-level surface so
 // they run in CI on every commit.
 //

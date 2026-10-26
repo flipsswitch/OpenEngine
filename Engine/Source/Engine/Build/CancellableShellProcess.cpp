@@ -158,7 +158,7 @@ void TrimTail(std::string& tail)
         tail.erase(0, tail.size() - kProcessStderrTailBytes);
 }
 
-constexpr int kPollMs = 15;  // cancellation responsiveness while waiting on output or exit
+constexpr int kPollMs = 15;  // cancellation responsiveness while waiting on output
 constexpr std::size_t kStdinChunkBytes = 64u * 1024u;
 
 } // namespace
@@ -171,15 +171,6 @@ CancellableShellProcess::~CancellableShellProcess()
 void CancellableShellProcess::Kill()
 {
     m_KillRequested.store(true);
-    std::lock_guard<std::mutex> lock(m_HandleMutex);
-    TerminateChildLocked();
-}
-
-void CancellableShellProcess::PollCancellation(const std::function<bool()>& shouldCancel, bool& cancelled)
-{
-    if (cancelled || !((shouldCancel && shouldCancel()) || m_KillRequested.load()))
-        return;
-    cancelled = true;
     std::lock_guard<std::mutex> lock(m_HandleMutex);
     TerminateChildLocked();
 }
@@ -460,25 +451,6 @@ void CancellableShellProcess::TerminateChildLocked()
         ::TerminateProcess(static_cast<HANDLE>(m_ProcessHandle), 1);
 }
 
-int CancellableShellProcess::WaitForExit(const std::function<bool()>& shouldCancel, bool& cancelled)
-{
-    const HANDLE process = static_cast<HANDLE>(m_ProcessHandle);
-    DWORD waitResult = WAIT_TIMEOUT;
-    while ((waitResult = ::WaitForSingleObject(process, kPollMs)) == WAIT_TIMEOUT)
-        PollCancellation(shouldCancel, cancelled);
-
-    DWORD exitCode = 0;
-    const bool hasExitCode = waitResult == WAIT_OBJECT_0 && ::GetExitCodeProcess(process, &exitCode);
-    if (!hasExitCode)
-        Logger::Log::Error("[CancellableShellProcess] wait for exit failed (err={})", ::GetLastError());
-
-    std::lock_guard<std::mutex> lock(m_HandleMutex);
-    // Kill can end the wait before its request reaches a cancellation poll.
-    cancelled = cancelled || m_KillRequested.load();
-    m_ProcessHandle = nullptr;
-    return hasExitCode ? static_cast<int>(exitCode) : -1;
-}
-
 ShellProcessResult CancellableShellProcess::Run(const std::string& command,
                                                 std::function<bool()> shouldCancel,
                                                 std::function<void(const std::string& line)> onLine)
@@ -545,7 +517,12 @@ ShellProcessResult CancellableShellProcess::Run(const std::string& command,
     {
         // Poll cancellation every iteration — including while output is streaming
         // — so a chatty child (cmake/compiler) can still be cancelled promptly.
-        PollCancellation(shouldCancel, result.cancelled);
+        if (!result.cancelled && ((shouldCancel && shouldCancel()) || m_KillRequested.load()))
+        {
+            result.cancelled = true;
+            std::lock_guard<std::mutex> lock(m_HandleMutex);
+            TerminateChildLocked();
+        }
 
         DWORD avail = 0;
         const BOOL peekOk = ::PeekNamedPipe(readPipe, nullptr, 0, nullptr, &avail, nullptr);
@@ -570,7 +547,16 @@ ShellProcessResult CancellableShellProcess::Run(const std::string& command,
     }
     sink.Flush();
 
-    result.exitCode = WaitForExit(shouldCancel, result.cancelled);
+    ::WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD exitCode = 0;
+    ::GetExitCodeProcess(pi.hProcess, &exitCode);
+    result.exitCode = static_cast<int>(exitCode);
+
+    {
+        std::lock_guard<std::mutex> lock(m_HandleMutex);
+        result.cancelled = result.cancelled || m_KillRequested.load();
+        m_ProcessHandle = nullptr;
+    }
     ::CloseHandle(pi.hProcess);
     ::CloseHandle(readPipe);
     return result;
@@ -691,7 +677,12 @@ ShellProcessResult CancellableShellProcess::Run(const ProcessLaunch& launch,
     char buf[4096];
     for (;;)
     {
-        PollCancellation(shouldCancel, result.cancelled);
+        if (!result.cancelled && ((shouldCancel && shouldCancel()) || m_KillRequested.load()))
+        {
+            result.cancelled = true;
+            std::lock_guard<std::mutex> lock(m_HandleMutex);
+            TerminateChildLocked();
+        }
 
         const std::size_t outBytes = ReadAvailable(stdoutPipe.Read, stdoutOpen, buf, sizeof(buf));
         sink.Consume(buf, outBytes);
@@ -709,7 +700,7 @@ ShellProcessResult CancellableShellProcess::Run(const ProcessLaunch& launch,
     sink.Flush();
     TrimTail(result.stderrTail);
 
-    result.exitCode = WaitForExit(shouldCancel, result.cancelled);
+    ::WaitForSingleObject(pi.hProcess, INFINITE);
     // A write still pending now is held by another process with the read end (a
     // descendant of the child, or a process another thread started with
     // CreateProcess(TRUE)): cancel it rather than wait on that process.
@@ -717,6 +708,15 @@ ShellProcessResult CancellableShellProcess::Run(const ProcessLaunch& launch,
     while (::WaitForSingleObject(stdinWriter.native_handle(), kPollMs) == WAIT_TIMEOUT)
         ::CancelSynchronousIo(stdinWriter.native_handle());
     stdinWriter.join();
+    DWORD exitCode = 0;
+    ::GetExitCodeProcess(pi.hProcess, &exitCode);
+    result.exitCode = static_cast<int>(exitCode);
+
+    {
+        std::lock_guard<std::mutex> lock(m_HandleMutex);
+        result.cancelled = result.cancelled || m_KillRequested.load();
+        m_ProcessHandle = nullptr;
+    }
     ::CloseHandle(pi.hProcess);
     stdoutPipe.Close();
     stderrPipe.Close();
@@ -873,35 +873,6 @@ void CancellableShellProcess::TerminateChildLocked()
         ::kill(m_Pid, SIGKILL);
 }
 
-int CancellableShellProcess::WaitForExit(const std::function<bool()>& shouldCancel, bool& cancelled)
-{
-    for (;;)
-    {
-        {
-            std::lock_guard<std::mutex> lock(m_HandleMutex);
-            int status = 0;
-            const pid_t reaped = ::waitpid(m_Pid, &status, WNOHANG);
-            if (reaped < 0 && errno == EINTR)
-                continue;
-            if (reaped != 0)
-            {
-                cancelled = cancelled || m_KillRequested.load();
-                // Retire the pid under the same lock as reaping, before Kill can use it again.
-                m_Pid = -1;
-                if (reaped < 0)
-                    Logger::Log::Error("[CancellableShellProcess] waitpid failed (errno={})", errno);
-                else if (WIFEXITED(status))
-                    return WEXITSTATUS(status);
-                else if (WIFSIGNALED(status))
-                    return 128 + WTERMSIG(status);
-                return -1;
-            }
-        }
-        PollCancellation(shouldCancel, cancelled);
-        ::poll(nullptr, 0, kPollMs);
-    }
-}
-
 ShellProcessResult CancellableShellProcess::Run(const std::string& command,
                                                 std::function<bool()> shouldCancel,
                                                 std::function<void(const std::string& line)> onLine)
@@ -954,7 +925,12 @@ ShellProcessResult CancellableShellProcess::Run(const std::string& command,
     {
         // Poll cancellation every iteration — including while output is streaming
         // — so a chatty child (cmake/compiler) can still be cancelled promptly.
-        PollCancellation(shouldCancel, result.cancelled);
+        if (!result.cancelled && ((shouldCancel && shouldCancel()) || m_KillRequested.load()))
+        {
+            result.cancelled = true;
+            std::lock_guard<std::mutex> lock(m_HandleMutex);
+            TerminateChildLocked();
+        }
 
         pollfd pfd{};
         pfd.fd = readFd;
@@ -978,7 +954,19 @@ ShellProcessResult CancellableShellProcess::Run(const std::string& command,
     }
     sink.Flush();
 
-    result.exitCode = WaitForExit(shouldCancel, result.cancelled);
+    int status = 0;
+    pid_t reaped;
+    do { reaped = ::waitpid(pid, &status, 0); } while (reaped < 0 && errno == EINTR);
+    if (WIFEXITED(status))
+        result.exitCode = WEXITSTATUS(status);
+    else if (WIFSIGNALED(status))
+        result.exitCode = 128 + WTERMSIG(status);
+
+    {
+        std::lock_guard<std::mutex> lock(m_HandleMutex);
+        result.cancelled = result.cancelled || m_KillRequested.load();
+        m_Pid = -1;
+    }
     ::close(readFd);
     return result;
 }
@@ -1008,16 +996,14 @@ void CloseFd(int& fd)
 }
 
 // Writes the payload to the child's stdin, then closes it so the child sees the
-// end of input. The stdin pipe suppresses SIGPIPE on macOS; other POSIX systems
-// block it on this writer thread so an early child exit only fails the write.
+// end of input. SIGPIPE is blocked on this thread, so a child that exits early
+// fails the write with EPIPE instead of killing the editor.
 void WriteStdin(int fd, const std::string& payload)
 {
-#if !defined(__APPLE__)
     sigset_t pipeSignal;
     sigemptyset(&pipeSignal);
     sigaddset(&pipeSignal, SIGPIPE);
     ::pthread_sigmask(SIG_BLOCK, &pipeSignal, nullptr);
-#endif
 
     std::size_t offset = 0;
     while (offset < payload.size())
@@ -1103,18 +1089,6 @@ ShellProcessResult CancellableShellProcess::Run(const ProcessLaunch& launch,
         return result;
     }
 
-#if defined(__APPLE__)
-    // Darwin delivers a broken-pipe signal to the process, not just the writer thread.
-    if (::fcntl(stdinFds[1], F_SETNOSIGPIPE, 1) != 0)
-    {
-        Logger::Log::Error("[CancellableShellProcess] could not suppress stdin SIGPIPE (errno={})", errno);
-        for (int* fd : {&stdinFds[0], &stdinFds[1], &stdoutFds[0], &stdoutFds[1], &stderrFds[0], &stderrFds[1],
-                        &statusFds[0], &statusFds[1]})
-            CloseFd(*fd);
-        return result;
-    }
-#endif
-
     // Everything the child needs is built before fork().
     std::vector<std::string> storage;
     storage.reserve(launch.Arguments.size() + 1u);
@@ -1194,7 +1168,12 @@ ShellProcessResult CancellableShellProcess::Run(const ProcessLaunch& launch,
     char buf[4096];
     while (stdoutOpen || stderrOpen)
     {
-        PollCancellation(shouldCancel, result.cancelled);
+        if (!result.cancelled && ((shouldCancel && shouldCancel()) || m_KillRequested.load()))
+        {
+            result.cancelled = true;
+            std::lock_guard<std::mutex> lock(m_HandleMutex);
+            TerminateChildLocked();
+        }
 
         pollfd fds[2] = {{stdoutOpen ? stdoutFds[0] : -1, POLLIN, 0}, {stderrOpen ? stderrFds[0] : -1, POLLIN, 0}};
         const int ready = ::poll(fds, 2, kPollMs);
@@ -1211,8 +1190,23 @@ ShellProcessResult CancellableShellProcess::Run(const ProcessLaunch& launch,
     sink.Flush();
     TrimTail(result.stderrTail);
 
-    result.exitCode = WaitForExit(shouldCancel, result.cancelled);
+    int status = 0;
+    pid_t reaped;
+    do { reaped = ::waitpid(pid, &status, 0); } while (reaped < 0 && errno == EINTR);
     stdinWriter.join();  // the child is gone, so a pending write has failed
+    if (reaped == pid)
+    {
+        if (WIFEXITED(status))
+            result.exitCode = WEXITSTATUS(status);
+        else if (WIFSIGNALED(status))
+            result.exitCode = 128 + WTERMSIG(status);
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_HandleMutex);
+        result.cancelled = result.cancelled || m_KillRequested.load();
+        m_Pid = -1;
+    }
     CloseFd(stdoutFds[0]);
     CloseFd(stderrFds[0]);
     return result;

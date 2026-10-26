@@ -127,9 +127,13 @@ void SplinePlacementController::Update(ECS::World& world,
                                       candidate.Entity.id))
             continue;
 
+        state.Hold.Held = false;
+
         if (Rebuild(world, *renderServices, candidate, state))
             worldDirty = true;
-        state.Gate.MarkBuilt(current);
+
+        if (!state.Hold.Held)
+            state.Gate.MarkBuilt(current);
     }
 
     // Retire tiles whose recipe entity no longer matches the query.
@@ -409,6 +413,8 @@ bool SplinePlacementController::Rebuild(ECS::World& world,
     // Every conform ray for this rebuild has now been cast (the centerline drape plus
     // BuildTilePoses' per-station probes), so the tally is complete. Reported before the
     // empty-layout return so a spline that missed the ground entirely still says so.
+    if (HoldForPendingBvh(conformMisses, candidate.Entity.id, state.Hold))
+        return false;
     ReportConformMisses(conformMisses, candidate.Entity.id, state.LoggedConformMisses);
     ReportTiltClamp(tiltClamp, candidate.Entity.id, recipe.MaxTiltDegrees,
                     state.LoggedTiltClamps);

@@ -12,7 +12,6 @@
 // stdout and stderr and reports its stdin, working directory and environment.
 
 #include "Engine/Build/CancellableShellProcess.h"
-#include "Engine/Build/ShellUtil.h"
 
 #include "Platform/Process.h"
 #include "Platform/Shell.h"
@@ -27,7 +26,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
-#include <functional>
 #include <optional>
 #include <string>
 #include <thread>
@@ -68,20 +66,6 @@ constexpr std::chrono::seconds kArgvEchoTimeout{30};
 
 auto NeverCancel = [] { return false; };
 
-constexpr std::chrono::milliseconds kCancellationDelay{100};
-constexpr std::chrono::seconds kCancellationLimit{3};
-
-void KillAfterOutput(CancellableShellProcess& process, const std::atomic<bool>& started)
-{
-    constexpr std::chrono::seconds kStartTimeout{5};
-    constexpr std::chrono::milliseconds kStartPollInterval{5};
-    const auto deadline = std::chrono::steady_clock::now() + kStartTimeout;
-    while (!started.load() && std::chrono::steady_clock::now() < deadline)
-        std::this_thread::sleep_for(kStartPollInterval);
-    std::this_thread::sleep_for(kCancellationDelay);
-    process.Kill();
-}
-
 // Anchored to this executable, never to the working directory: the fixture is
 // staged beside the test binary.
 std::filesystem::path ArgvEchoPath()
@@ -103,15 +87,6 @@ ProcessLaunch ProbeLaunch(std::vector<std::string> arguments)
     launch.Executable = ProbePath().string();
     launch.Arguments = std::move(arguments);
     return launch;
-}
-
-std::string WaitingShellCommand()
-{
-#if defined(_WIN32)
-    return "echo started & for /L %i in (1,1,10000000) do @rem";
-#else
-    return "exec " + GameEngine::ShellQuote(ProbePath()) + " sleep-closed-streams 5000";
-#endif
 }
 
 // Runs the argv overload, collecting the lines handed to the callback.
@@ -528,119 +503,4 @@ TEST(CancellableShellProcessTests, ArgvRunKillMidRunEndsTheChildPromptly)
     EXPECT_TRUE(result.cancelled);
     EXPECT_NE(result.exitCode, 0);
     EXPECT_LT(elapsed, std::chrono::seconds(10));  // the probe sleeps 30 s unless killed
-}
-
-TEST(CancellableShellProcessTests, ArgvRunReportsKillAfterTheOutputStreamsClose)
-{
-    CancellableShellProcess process;
-    std::atomic<bool> started{false};
-    std::thread killer(KillAfterOutput, std::ref(process), std::cref(started));
-    const auto begin = std::chrono::steady_clock::now();
-
-    const ShellProcessResult result = process.Run(ProbeLaunch({"sleep-closed-streams", "5000"}), NeverCancel,
-        [&started](const std::string&) { started.store(true); });
-    killer.join();
-
-    EXPECT_TRUE(started.load());
-    EXPECT_TRUE(result.cancelled);
-    EXPECT_NE(result.exitCode, 0);
-    EXPECT_LT(std::chrono::steady_clock::now() - begin, kCancellationLimit);
-
-    const ShellProcessResult next = process.Run(ProbeLaunch({"streams"}), NeverCancel, nullptr);
-    EXPECT_EQ(next.exitCode, 0);
-    EXPECT_FALSE(next.cancelled);
-}
-
-TEST(CancellableShellProcessTests, ArgvRunPollsCancellationAfterTheOutputStreamsClose)
-{
-    CancellableShellProcess process;
-    std::optional<std::chrono::steady_clock::time_point> outputAt;
-    const auto begin = std::chrono::steady_clock::now();
-    const ShellProcessResult result = process.Run(ProbeLaunch({"sleep-closed-streams", "5000"}),
-        [&outputAt] { return outputAt && std::chrono::steady_clock::now() - *outputAt >= kCancellationDelay; },
-        [&outputAt](const std::string&) { outputAt = std::chrono::steady_clock::now(); });
-
-    EXPECT_TRUE(outputAt.has_value());
-    EXPECT_TRUE(result.cancelled);
-    EXPECT_NE(result.exitCode, 0);
-    EXPECT_LT(std::chrono::steady_clock::now() - begin, kCancellationLimit);
-
-    const ShellProcessResult next = process.Run(ProbeLaunch({"streams"}), NeverCancel, nullptr);
-    EXPECT_EQ(next.exitCode, 0);
-    EXPECT_FALSE(next.cancelled);
-}
-
-TEST(CancellableShellProcessTests, ShellRunReportsKillAndCanBeReused)
-{
-    CancellableShellProcess process;
-    std::atomic<bool> started{false};
-    std::thread killer(KillAfterOutput, std::ref(process), std::cref(started));
-    const auto begin = std::chrono::steady_clock::now();
-    const ShellProcessResult result = process.Run(WaitingShellCommand(), NeverCancel,
-        [&started](const std::string&) { started.store(true); });
-    killer.join();
-
-    EXPECT_TRUE(started.load());
-    EXPECT_TRUE(result.cancelled);
-    EXPECT_NE(result.exitCode, 0);
-    EXPECT_LT(std::chrono::steady_clock::now() - begin, kCancellationLimit);
-
-    const ShellProcessResult next = process.Run(kEchoCommand, NeverCancel, nullptr);
-    EXPECT_EQ(next.exitCode, 0);
-    EXPECT_FALSE(next.cancelled);
-}
-
-TEST(CancellableShellProcessTests, ArgvRunCancelsPendingStdinAfterTheOutputStreamsClose)
-{
-    constexpr std::size_t kBlockedStdinBytes = 1024u * 1024u;
-    ProcessLaunch launch = ProbeLaunch({"sleep-closed-streams", "5000"});
-    launch.StdinPayload.assign(kBlockedStdinBytes, 'p');
-    CancellableShellProcess process;
-    std::optional<std::chrono::steady_clock::time_point> outputAt;
-    const auto begin = std::chrono::steady_clock::now();
-    const ShellProcessResult result = process.Run(launch,
-        [&outputAt] { return outputAt && std::chrono::steady_clock::now() - *outputAt >= kCancellationDelay; },
-        [&outputAt](const std::string&) { outputAt = std::chrono::steady_clock::now(); });
-
-    EXPECT_TRUE(outputAt.has_value());
-    EXPECT_TRUE(result.cancelled);
-    EXPECT_NE(result.exitCode, 0);
-    EXPECT_LT(std::chrono::steady_clock::now() - begin, kCancellationLimit);
-
-    const ShellProcessResult next = process.Run(ProbeLaunch({"streams"}), NeverCancel, nullptr);
-    EXPECT_EQ(next.exitCode, 0);
-    EXPECT_FALSE(next.cancelled);
-}
-
-TEST(CancellableShellProcessTests, ArgvRunWaitsForNormalExitAfterTheOutputStreamsClose)
-{
-    constexpr std::chrono::milliseconds kChildWait{200};
-    std::vector<std::string> lines;
-    const auto begin = std::chrono::steady_clock::now();
-    const ShellProcessResult result = RunCollecting(
-        ProbeLaunch({"sleep-closed-streams", std::to_string(kChildWait.count())}), lines);
-
-    EXPECT_EQ(lines, std::vector<std::string>{"closing"});
-    EXPECT_EQ(result.exitCode, 0);
-    EXPECT_FALSE(result.cancelled);
-    EXPECT_GE(std::chrono::steady_clock::now() - begin, kChildWait);
-}
-
-TEST(CancellableShellProcessTests, ShellRunPollsCancellationWhileWaitingForExit)
-{
-    CancellableShellProcess process;
-    std::optional<std::chrono::steady_clock::time_point> outputAt;
-    const auto begin = std::chrono::steady_clock::now();
-    const ShellProcessResult result = process.Run(WaitingShellCommand(),
-        [&outputAt] { return outputAt && std::chrono::steady_clock::now() - *outputAt >= kCancellationDelay; },
-        [&outputAt](const std::string&) { outputAt = std::chrono::steady_clock::now(); });
-
-    EXPECT_TRUE(outputAt.has_value());
-    EXPECT_TRUE(result.cancelled);
-    EXPECT_NE(result.exitCode, 0);
-    EXPECT_LT(std::chrono::steady_clock::now() - begin, kCancellationLimit);
-
-    const ShellProcessResult next = process.Run(kEchoCommand, NeverCancel, nullptr);
-    EXPECT_EQ(next.exitCode, 0);
-    EXPECT_FALSE(next.cancelled);
 }
