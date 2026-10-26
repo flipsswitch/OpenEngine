@@ -92,6 +92,16 @@ void RequestTiledTerrainHeightPages(TerrainService& service, const Rendering::ID
             samplesX = store->Layout().Header.SamplesX;
             samplesZ = store->Layout().Header.SamplesZ;
         }
+        const std::string directoryRefusal =
+            DenseDirectoryRefusal(name.empty() ? std::string_view("A terrain") : name, samplesX, samplesZ);
+        if (!directoryRefusal.empty())
+        {
+            // It draws from its height texture, as a terrain without a store does.
+            pages.ReportRefusal(request.Terrain, directoryRefusal);
+            store = nullptr;
+            samplesX = 0;
+            samplesZ = 0;
+        }
     }
 
     TerrainHeightSourceInputs inputs;
@@ -105,9 +115,8 @@ void RequestTiledTerrainHeightPages(TerrainService& service, const Rendering::ID
     const bool onLattice = samplesX == extent.UnifiedWidth && samplesZ == extent.UnifiedHeight;
     const std::string_view label = name.empty() ? std::string_view("A terrain") : name;
     const bool fitsLattice = samplesX > 1u && samplesZ > 1u && (!generated || onLattice);
-    std::string refusal = fitsLattice ? PageTableRefusal(label, samplesX, samplesZ, pages.Profile()) : std::string();
+    std::string refusal;
     inputs.PagesOnLattice = fitsLattice;
-    inputs.PageTableFits = fitsLattice && refusal.empty();
     // The modifier system builds the overlay for every terrain with CPU pages: the CPU readers take
     // it on every GPU arm, and the GPU pages take it where they are drawn.
     const bool cpuPages = TerrainHeightHasCpuPages(inputs);

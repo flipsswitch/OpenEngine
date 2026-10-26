@@ -8,7 +8,7 @@
 #include "ECS/World.h"
 #include "Logger/Logger.h"
 #include "Mathematics/Ray.h"
-#include "Picking/MeshPickingService.h"
+#include "Scene/SceneRaycast.h"
 #include "TerrainECS/TerrainModifierSystem.h"
 #include "TerrainECS/TerrainService.h"
 #include "Types/Types.h"
@@ -58,9 +58,14 @@ std::vector<ECS::EntityHandle> CollectConformRayIgnoreList(ECS::World& world)
     return ignore;
 }
 
-void ConformMissTally::Record(bool hit, const Mathematics::Vector3& sample)
+void ConformMissTally::Record(bool hit, bool bvhPending, const Mathematics::Vector3& sample)
 {
     ++Probes;
+    if (bvhPending)
+    {
+        ++PendingBvh;
+        return;
+    }
     if (hit)
         return;
     if (Misses == 0u)
@@ -79,25 +84,20 @@ bool ConformRayDown(ECS::World& world, const Mathematics::Vector3& sample,
     ray.origin = Mathematics::Vector3(sample.x, sample.y + kConformRayLift, sample.z);
     ray.direction = Mathematics::Vector3(0.0f, -1.0f, 0.0f);
 
-    Picking::PickOptions options;
+    Scene::PickOptions options;
     options.MaxDistance = kConformRayMaxDistance;
     options.IgnoreEntities = ignore;
-    // The conformed geometry is authored from these hits and is rebuilt only when the ground
-    // revision moves, which a BVH being published does not do: a bounds hit would stay.
-    options.WaitForMeshBvh = true;
+    // The bounds fallback stays off (the default): a renderer's box is not ground. A mesh still
+    // preparing its picking data gives no hit and marks the result pending, which holds the
+    // rebuild (HoldForPendingBvh).
     if (target == Components::SplineConformTarget::TerrainOnly)
     {
         options.IncludeMeshes = false;
         options.IncludePrimitives = false;
-        // Also the bounds fallback, which answers for renderers with no CPU mesh
-        // data and is tested BEFORE the mesh/primitive filters — clearing the two
-        // flags above happens to skip the whole traversal today, but this states
-        // "terrain, nothing else" here rather than resting on that.
-        options.IncludeBoundsFallback = false;
     }
-    const Picking::PickResult result = Picking::RaycastScene(ray, world, options);
+    const Scene::PickResult result = Scene::RaycastScene(ray, world, options);
     if (tally)
-        tally->Record(result.Hit, sample);
+        tally->Record(result.Hit, result.MeshBvhPending, sample);
     if (!result.Hit)
         return false;
     outHit = result.Best.WorldPosition;
@@ -124,6 +124,25 @@ void ReportConformMisses(const ConformMissTally& tally, uint32 entityId,
         entityId, tally.Misses, tally.Probes,
         tally.FirstMiss.x, tally.FirstMiss.y, tally.FirstMiss.z,
         kConformRayLift, kConformRayMaxDistance);
+}
+
+bool HoldForPendingBvh(const ConformMissTally& tally, uint32 entityId, ConformHold& hold)
+{
+    hold.Held = tally.PendingBvh > 0u;
+    if (!hold.Held)
+    {
+        hold.Reported = false;
+        return false;
+    }
+    if (!hold.Reported)
+    {
+        hold.Reported = true;
+        Logger::Log::Info(
+            "SplineConform: entity {} held: waiting for the picking data of a mesh under {} of {} "
+            "samples. The rebuild keeps the previous pieces and lands when the data is ready.",
+            entityId, tally.PendingBvh, tally.Probes);
+    }
+    return true;
 }
 
 uint64 ConformSurfaceRevision(ECS::World& world,

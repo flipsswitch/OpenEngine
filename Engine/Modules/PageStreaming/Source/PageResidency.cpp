@@ -88,7 +88,10 @@ void PageResidencyManager::Configure(uint32 stream, uint32 field, PageSource sou
     state.Epoch = m_NextEpoch++;
     const std::span<const PageStoreLevel> levels = LevelsOf(state.Source);
     const uint32 faces = state.Source.Store ? state.Source.Store->Layout().Header.FaceCount : 1u;
-    state.EntriesPerFace = levels.empty() ? 0u : levels.back().FirstEntry + levels.back().PagesX * levels.back().PagesZ;
+    assert((levels.empty() || (levels.front().SamplesX <= kCpuDirectoryMaxSamplesPerAxis &&
+                               levels.front().SamplesZ <= kCpuDirectoryMaxSamplesPerAxis)) &&
+           "a store past the CPU directory's limit is refused before it streams");
+    state.EntriesPerFace = static_cast<uint32>(DensePageCount(levels));
     state.CpuDirectory.assign(static_cast<std::size_t>(faces) * state.EntriesPerFace, CpuPageEntry{});
     state.CpuChanges.assign(kCpuChangeRecordLength, PageAddress{});
     state.KeptCpuWindow.clear(); // the old source's window
@@ -405,15 +408,21 @@ void PageResidencyManager::Refresh(uint32 streamId, const PageSampleRect& level0
         return;
     Stream& stream = it->second;
     for (const CachedPage& page : m_Fields.at(stream.Field).Resident())
-        if (page.Stream == streamId && PageReadsLevel0Rect(page.Address, level0Rect))
-            stream.Stale.insert(page.Address);
+    {
+        if (page.Stream != streamId || !PageReadsLevel0Rect(page.Address, level0Rect))
+            continue;
+        if (PageSampleRect* stale = stream.Stale.Find(page.Address))
+            *stale = Union(*stale, level0Rect);
+        else
+            stream.Stale.InsertOrAssign(page.Address, level0Rect);
+    }
 }
 
 void PageResidencyManager::StartLoads(uint64 frameIndex)
 {
     // A refreshed page is shown with its old content until it is rewritten: reload those first.
     for (auto& [id, stream] : m_Streams)
-        for (const PageAddress& address : stream.Stale)
+        for (const auto& [address, level0Rect] : stream.Stale)
         {
             if (m_InFlightCount >= m_Budget.LoadsInFlight)
                 return;
@@ -475,20 +484,19 @@ void PageResidencyManager::AssignLoaded(uint64 frameIndex, float32 deltaSeconds,
 
 void PageResidencyManager::RewriteRefreshed(uint32 field, PageCache& cache)
 {
-    for (auto& [id, stream] : m_Streams)
+    for (auto& entry : m_Streams)
     {
+        const uint32 id = entry.first;
+        Stream& stream = entry.second;
         if (stream.Field != field)
             continue;
-        for (auto page = stream.Stale.begin(); page != stream.Stale.end();)
-        {
-            const CachedPage cached{id, *page};
-            if (cache.SlotOf(cached) == kNoResidentSlot)
-                page = stream.Stale.erase(page); // released meanwhile: a later assign loads it afresh
-            else if (stream.Loaded.count(*page) && cache.Rewrite(cached))
-                page = stream.Stale.erase(page);
-            else
-                ++page;
-        }
+        // A page released meanwhile is dropped (a later assign loads it afresh); a loaded one is
+        // rewritten; the rest wait for their load.
+        stream.Stale.EraseIf([id, &stream, &cache](const PageAddress& address, const PageSampleRect& level0Rect) {
+            const CachedPage cached{id, address};
+            return cache.SlotOf(cached) == kNoResidentSlot ||
+                   (stream.Loaded.count(address) != 0 && cache.Rewrite(cached, level0Rect));
+        });
     }
 }
 

@@ -2477,8 +2477,9 @@ void TerrainModifierSystem::GatherModifiers(ECS::World& world,
         if (const auto* c = w.GetComponent<Components::TerrainColorEffect>(e); c && c->Enabled)
         {
             auto& fx = add(ResolvedEffect::Kind::Color, c->StackOrder);
-            for (uint32 i = 0; i < 3; ++i)
-                fx.Color.Linear[i] = Components::ClampTerrainColorEffectValue(c->Color[i]);
+            fx.Color.Linear[0] = Components::ClampTerrainColorEffectValue(c->Color.r);
+            fx.Color.Linear[1] = Components::ClampTerrainColorEffectValue(c->Color.g);
+            fx.Color.Linear[2] = Components::ClampTerrainColorEffectValue(c->Color.b);
             fx.Color.Strength = Components::ClampTerrainColorEffectValue(c->Strength);
         }
 

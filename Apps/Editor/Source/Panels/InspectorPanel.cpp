@@ -151,7 +151,7 @@
 #include "Components/Rendering/SkyEnvironment.h"
 #include "Components/Rendering/Skybox.h"
 #include "Components/Rendering/WindVolume.h"
-#include "Components/SceneBlueprintInstance.h"
+#include "Components/PrefabInstance.h"
 #include "Components/SceneEntityTag.h"
 #include "Components/SceneSubsceneInstance.h"
 #include "Components/Spline/SplineComponent.h"
@@ -661,7 +661,7 @@ static const std::unordered_map<ECS::ComponentTypeId, std::string>& GetComponent
         s_Names[ECS::GetComponentTypeId<AnimatedNodeRef>()] = "Animated Node";
 
         s_Names[ECS::GetComponentTypeId<SceneEntityTag>()] = "Scene Entity Tag";
-        s_Names[ECS::GetComponentTypeId<SceneBlueprintInstance>()] = "Scene Blueprint Instance";
+        s_Names[ECS::GetComponentTypeId<PrefabInstance>()] = "Prefab Instance";
         s_Names[ECS::GetComponentTypeId<SceneSubsceneInstance>()] = "Scene Subscene Instance";
 
         s_Names[ECS::GetComponentTypeId<Components::Terrain>()] = "Terrain";

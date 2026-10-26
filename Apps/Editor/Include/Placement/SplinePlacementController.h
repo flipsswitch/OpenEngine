@@ -18,7 +18,7 @@ namespace GameEngine::Editor
 
 // Editor-side consumer of Components::SplinePlacement: drapes a dense
 // centerline of the sibling SplineComponent's curve onto the visible scene via
-// the editor raycast (Picking::RaycastScene), spaces tiles by true 3D distance
+// the scene raycast (Scene::RaycastScene), spaces tiles by true 3D distance
 // along that draped centerline (yaw from each tile's own chord, mesh footprint
 // centered on the line), and maintains RuntimeOnlyEntity-tagged tile entities.
 // The scene serializes only the recipe (SplineComponent + SplinePlacement);
@@ -94,6 +94,8 @@ private:
         // Conform misses reported for this entity, so a scene that rebuilds every frame
         // warns when the count moves rather than once per frame.
         uint32 LoggedConformMisses = 0;
+        // A rebuild held on a pending BVH (HoldForPendingBvh): not marked built, so it runs again.
+        ConformHold Hold;
         // Same on-change contract for the tilt ceiling's held-station count.
         uint32 LoggedTiltClamps = 0;
         std::vector<ECS::EntityHandle> Tiles;

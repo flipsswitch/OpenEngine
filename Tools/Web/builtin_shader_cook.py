@@ -172,6 +172,7 @@ kEditorPackages: dict[str, dict[str, str]] = {
     "lens_flare": {"vs": "lens_flare.vert", "fs": "lens_flare.frag"},
     "sun_glare": {"vs": "sun_glare.vert", "fs": "sun_glare.frag"},
     "sun_glare_ms": {"vs": "sun_glare_ms.vert", "fs": "sun_glare.frag"},
+    "sun_glare_casters": {"cs": "sun_glare_casters.comp"},
     "msm_blur_h": {"vs": "fullscreen_noinput.vert", "fs": "msm_blur_h.frag"},
     "sssr_classify": {"cs": "ScreenSpaceReflections/sssr_classify.comp"},
     "sssr_composite": {"cs": "ScreenSpaceReflections/sssr_composite.comp"},
@@ -282,7 +283,7 @@ kEditorPackages: dict[str, dict[str, str]] = {
 kLibraryPackages: dict[str, dict[str, str]] = {
     name: kEditorPackages[name] for name in (
         "auto_exposure_histogram", "auto_exposure_resolve", "pre_exposure_snapshot", "sun_glare",
-        "sun_glare_ms",
+        "sun_glare_ms", "sun_glare_casters",
         "bloom_threshold", "bloom_downsample", "bloom_octave_gather", "bloom_lens_dirt_gather",
         "bloom_combine", "bloom_lens_dirt", "msm_blur_h",
         "taa_motion_vectors", "taa_motion_vectors_skinned", "taa_resolve", "taa_resolve_upscale",

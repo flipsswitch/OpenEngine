@@ -17,6 +17,8 @@ class SharedFileReader;
 namespace GameEngine::PageStreaming
 {
 
+class PageCodec;
+
 /// Reads one page store: a .gepage file, or one field of a terrain container (.geterrain) at the
 /// field's offset. The layout is read and validated once at Open; pages are read synchronously by
 /// seek + read. Every page call may run on any thread (reads share one handle under a lock).
@@ -29,9 +31,11 @@ public:
     PageStoreReader(const PageStoreReader&) = delete;
     PageStoreReader& operator=(const PageStoreReader&) = delete;
 
-    /// Opens the store at `baseOffset` of `file`, occupying the rest of the file or `storeBytes`
-    /// when non-zero. Returns an empty string, else the reason (the reader stays closed).
-    std::string Open(const std::filesystem::path& file, uint64 baseOffset = 0, uint64 storeBytes = 0);
+    /// Opens the `kind` store at `baseOffset` of `file`, occupying the rest of the file or
+    /// `storeBytes` when non-zero. Returns an empty string, else the reason (the reader stays
+    /// closed); a store whose format and filter are not `kind`'s is refused.
+    std::string Open(const std::filesystem::path& file, PageFieldKind kind, uint64 baseOffset = 0,
+                     uint64 storeBytes = 0);
 
     bool IsOpen() const { return m_IsOpen; }
     const PageStoreLayout& Layout() const { return m_Layout; }
@@ -42,8 +46,13 @@ public:
     /// Reads a present page's stored bytes. False when the page is absent or the read fails.
     bool ReadPageBytes(const PageAddress& address, std::vector<uint8>& outBytes) const;
 
-    /// Reads and decodes a present height page into kPageSampleCount samples (row-major, apron
-    /// included). False when the page is absent or the read fails.
+    /// Reads and decodes a present page into its samples with the store's codec: PageStrideTexels(format)^2
+    /// samples of PageTexelBytes(format) bytes, row-major, apron included. False when the page is
+    /// absent, `outSamples` is not the page's size, or the read fails.
+    bool ReadPageSamples(const PageAddress& address, std::span<uint8> outSamples) const;
+
+    /// Reads and decodes a present page of a height store into kPageSampleCount samples (row-major,
+    /// apron included). False when the store holds no heights, the page is absent or the read fails.
     bool ReadHeightPage(const PageAddress& address, std::span<float32> outSamples) const;
 
 private:
@@ -52,6 +61,7 @@ private:
     PageStoreLayout m_Layout;
     bool m_IsOpen = false;
     std::unique_ptr<SharedFileReader> m_Reader;
+    std::unique_ptr<PageCodec> m_Codec;
     mutable std::mutex m_ReadMutex;
 };
 
