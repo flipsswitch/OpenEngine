@@ -18,10 +18,8 @@ namespace GameEngine.Scripting
             {
             }
 
-            /// <summary>
-            /// Set the Markdown text on the main thread. Null or empty text clears the control.
-            /// Returns false when the element no longer resolves.
-            /// </summary>
+            /// <summary>Set Markdown text on the main thread. Null or empty text clears the control.</summary>
+            /// <returns>False when the element no longer resolves.</returns>
             public bool SetText(string? text)
                 => GE_UIElement_SetMarkdownText(InstanceId, text ?? string.Empty) == 0;
         }
