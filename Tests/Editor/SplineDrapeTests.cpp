@@ -9,6 +9,7 @@
 
 #include "Components/Rendering/LocalBounds.h"
 #include "Components/Rendering/MeshRenderer.h"
+#include "Engine/Rendering/PrimitiveGenerator.h"
 #include "Components/Terrain/Terrain.h"
 #include "Components/Transform.h"
 #include "ECS/ECSTemplates.h"
@@ -561,10 +562,10 @@ TEST_F(SplineDrapeTests, ConformSurfaceRevisionTracksTerrainIdentity)
 TEST(ConformMissTallyTest, CountsProbesAndKeepsTheFirstMissAsWitness)
 {
     GameEngine::Editor::ConformMissTally tally;
-    tally.Record(true, Vector3(1.0f, 0.0f, 0.0f));
-    tally.Record(false, Vector3(2.0f, 3.0f, 4.0f));
-    tally.Record(false, Vector3(9.0f, 9.0f, 9.0f));
-    tally.Record(true, Vector3(5.0f, 0.0f, 0.0f));
+    tally.Record(true, false, Vector3(1.0f, 0.0f, 0.0f));
+    tally.Record(false, false, Vector3(2.0f, 3.0f, 4.0f));
+    tally.Record(false, false, Vector3(9.0f, 9.0f, 9.0f));
+    tally.Record(true, false, Vector3(5.0f, 0.0f, 0.0f));
 
     EXPECT_EQ(tally.Probes, 4u);
     EXPECT_EQ(tally.Misses, 2u);
@@ -581,7 +582,7 @@ TEST(ConformMissTallyTest, ReportFiresOnChangedCountAndStaysQuietOtherwise)
     using GameEngine::Editor::ReportConformMisses;
 
     GameEngine::Editor::ConformMissTally clean;
-    clean.Record(true, Vector3(0.0f, 0.0f, 0.0f));
+    clean.Record(true, false, Vector3(0.0f, 0.0f, 0.0f));
     uint32_t lastReported = 0u;
 
     // Nothing missed: nothing to say, and the state stays put.
@@ -589,7 +590,7 @@ TEST(ConformMissTallyTest, ReportFiresOnChangedCountAndStaysQuietOtherwise)
     EXPECT_EQ(lastReported, 0u);
 
     GameEngine::Editor::ConformMissTally missed;
-    missed.Record(false, Vector3(1.0f, 2.0f, 3.0f));
+    missed.Record(false, false, Vector3(1.0f, 2.0f, 3.0f));
     ReportConformMisses(missed, 7u, lastReported);
     EXPECT_EQ(lastReported, 1u) << "a first miss must report";
 
@@ -598,13 +599,13 @@ TEST(ConformMissTallyTest, ReportFiresOnChangedCountAndStaysQuietOtherwise)
     EXPECT_EQ(lastReported, 1u);
 
     // The count moving is new information and reports again.
-    missed.Record(false, Vector3(4.0f, 5.0f, 6.0f));
+    missed.Record(false, false, Vector3(4.0f, 5.0f, 6.0f));
     ReportConformMisses(missed, 7u, lastReported);
     EXPECT_EQ(lastReported, 2u);
 
     // Recovering to zero clears the state so a later regression reports afresh.
     GameEngine::Editor::ConformMissTally recovered;
-    recovered.Record(true, Vector3(0.0f, 0.0f, 0.0f));
+    recovered.Record(true, false, Vector3(0.0f, 0.0f, 0.0f));
     ReportConformMisses(recovered, 7u, lastReported);
     EXPECT_EQ(lastReported, 0u);
 }
@@ -644,21 +645,24 @@ void RegisterPickable(World& world, GameEngine::ECS::EntityHandle entity,
 }
 
 // A prop standing on the flat terrain, where a placed object would otherwise land
-// on top of another object such as a cart instead of on the terrain. It
-// carries no CPU mesh, so the picker answers for it through its bounds — which
-// is also the path that returns BEFORE PickOptions' mesh/primitive filters are
-// consulted, so it is the one a half-done terrain-only mode would leak through.
+// on top of another object such as a cart instead of on the terrain. It is the
+// built-in unit cube scaled to the cart's box: a renderer with a CPU mesh, the
+// only kind of renderer a conform ray lands on.
 GameEngine::ECS::EntityHandle CreateCartOnTheGround(World& world, float halfHeight)
 {
     Entity cart = world.Create();
     GameEngine::Components::MeshRenderer renderer{};
+    renderer.modelAssetGuid.Set(GameEngine::Engine::Renderer::PrimitiveGenerator::CubeGuid());
     cart.Set(renderer);
     GameEngine::Components::LocalBounds bounds{};
     bounds.Box.center = {0.0f, 0.0f, 0.0f};
-    bounds.Box.halfExtents = {1.0f, halfHeight, 1.0f};
+    bounds.Box.halfExtents = {0.5f, 0.5f, 0.5f};
     cart.Set(bounds);
 
     WorldTransform xf{};
+    xf.matrix[0] = 2.0f;
+    xf.matrix[5] = 2.0f * halfHeight;
+    xf.matrix[10] = 2.0f;
     xf.matrix[12] = 0.0f;
     xf.matrix[13] = halfHeight; // sitting ON the ground, top at 2*halfHeight
     xf.matrix[14] = 0.0f;

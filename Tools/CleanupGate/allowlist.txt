@@ -95,3 +95,12 @@ Engine/Source/Engine/Video/VideoPlayerFFmpeg.cpp:std_thread:2                   
 Engine/Source/Engine/Video/VideoWriter.mm:sleep_poll:2                                    # polls AVFoundation's readyForMoreMediaData, the encoder's own flag
 Engine/Source/Jobs/CompileServerClient.cpp:sleep_poll:1                                   # a process host (pipes block)
 Engine/Source/Jobs/PipeTransport.cpp:sleep_poll:1                                         # a process host (pipes block)
+Engine/Source/Scene/PrefabOverrideWriter.cpp:std_unordered_map:4                          # keyed per entity of a whole scene (the save context's tag map, the members by entity): a sorted insert is linear
+Engine/Source/Scene/PrefabOverrideWriter.cpp:std_unordered_set:1                          # keyed per entity of a whole scene (the excluded set, the created ids): a sorted insert is linear
+Engine/Source/Scene/PrefabOverrideWriter.cpp:string_key_unordered_set:2                   # the tags of every entity of a whole scene: a sorted insert is linear
+Engine/Source/Scene/PrefabOverrideWriter.h:std_unordered_map:2                            # keyed per entity of a whole scene (the save context's tag map, the members by entity): a sorted insert is linear
+Engine/Source/Scene/PrefabOverrideWriter.h:std_unordered_set:1                            # keyed per entity of a whole scene (the excluded set, the created ids): a sorted insert is linear
+Engine/Source/Scene/PrefabOverrideWriter.h:string_key_unordered_set:1                     # the tags of every entity of a whole scene: a sorted insert is linear
+Engine/Source/Scene/SceneDoc.h:string_key_unordered_set:1                                 # the tags of every entity of a whole scene: a sorted insert is linear
+Engine/Source/Scene/SceneIO.cpp:std_unordered_map:4                                       # keyed per entity of a whole scene (the save context's tag map, the members by entity): a sorted insert is linear
+Engine/Source/Scene/SceneIO.cpp:std_unordered_set:7                                       # keyed per entity of a whole scene (the excluded set, the created ids): a sorted insert is linear

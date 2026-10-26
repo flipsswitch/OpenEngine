@@ -83,7 +83,7 @@ set(ENGINE_SOURCES
     Source/Assets/Packages/PackagesIndex.cpp
     Source/Core/CommandLine.cpp
 
-    # Scene/Blueprint IO (INI schema)
+    # Scene/Prefab IO (INI schema)
     Source/Scene/SceneValue.cpp
     Source/Scene/RenderLayerMaskText.cpp
     Source/Scene/SceneSchemaRegistry.cpp
@@ -94,6 +94,12 @@ set(ENGINE_SOURCES
     Source/Components/Rendering/SkySunIlluminance.cpp
     Source/Components/Rendering/SkySunPath.cpp
     Source/Scene/SceneIO.cpp
+    Source/Scene/SceneRaycast.cpp
+    Source/Scene/MeshBvhCache.cpp
+    Source/Scene/MeshBvhDiskFormat.cpp
+    Source/Scene/TerrainPicking.cpp
+    Source/Scene/PrefabPlacement.cpp
+    Source/Scene/PrefabOverrideWriter.cpp
     Source/Scene/KeptComponentResolver.cpp
     Source/Scene/SceneEngineEmbedMaterializer.cpp
 
@@ -300,16 +306,19 @@ set(ENGINE_HEADERS
     Include/Engine/Rendering/PackageShaderDirs.h
     Include/Engine/Rendering/OceanDepthCacheBaker.h
 
-    # Scene/Blueprint IO (INI schema)
+    # Scene/Prefab IO (INI schema)
     Include/Scene/SceneValue.h
     Include/Scene/RenderLayerMaskText.h
     Include/Scene/SceneSchemaRegistry.h
     Include/Scene/SceneIO.h
+    Include/Scene/SceneRaycast.h
+    Include/Scene/SceneRaycastHost.h
+    Include/Scene/TerrainPicking.h
     Include/Scene/KeptComponentResolver.h
 
     # Scene authoring/persistence components
     Include/Components/SceneEntityTag.h
-    Include/Components/SceneBlueprintInstance.h
+    Include/Components/PrefabInstance.h
     Include/Components/SceneSubsceneInstance.h
 
 	# Rendering hot-reload bridge header
@@ -1145,8 +1154,8 @@ endif()
 # splices each module's .obj files into Engine's SHARED link, and CMake's
 # __create_def walks them for export when WINDOWS_EXPORT_ALL_SYMBOLS=ON.
 #
-# Editor-only modules (MeshPicking; VCSIntegration, which lives in
-# EditorSDK.dll) are NOT listed here — Engine.dll doesn't use them, and
+# The editor-only module VCSIntegration, which lives in EditorSDK.dll, is
+# NOT listed here: Engine.dll does not use it, and
 # packaged games must ship no VCS code (every VCS provider is an
 # Packages/*-vcs Editor-kind package module). Header-only INTERFACE
 # libs (Mathematics, Types) are also omitted since they have no .obj files
@@ -1160,7 +1169,7 @@ set(GE_ENGINE_MODULES
     Logger AssetCore AssetDatabase JobSystem ECS FileWatcher AssetRuntime Audio Scripting NativeScripting
     Platform FileSystem FileSystemCore Memory GameEngineRendering RenderServices VolumetricFog HeightFog GPUFogParticles Particles ParticlesAuthoring ParticlesAssets ParticlesSystems ParticlesRendering Animation NumericExpression UI Physics PhysicsECS
     Pathfinding PathfindingECS Terrain PageStreaming TerrainECS TerrainGrass CBTTerrain CBTTerrainECS Ocean Spline SplineGeometry SplineLayout SplineECS MarkupECS Graph
-    GenerationalVector Scheduler Scene SceneBvh Text Input PluginAPI Image
+    GenerationalVector Scheduler Scene SceneBvh MeshPicking Text Input PluginAPI Image
     PlatformServices PlatformProvider${GE_PLATFORM_BACKEND})
 target_link_libraries(Engine
     PRIVATE ${GE_ENGINE_MODULES} ${PLATFORM_LIBS} concurrentqueue::concurrentqueue
@@ -2223,6 +2232,7 @@ endif()
                 Tests/SssrPrefilterTileDispatchTests.cpp
                 Tests/SssrPrefilterFootprintTests.cpp
                 Tests/SunGlareRadianceTests.cpp
+                Tests/SunScreenProjectionTests.cpp
                 Tests/SssrDispatchArgsBoundsTests.cpp
                 Tests/ExposureTests.cpp
                 Tests/AutoExposureComputeTests.cpp
@@ -2262,6 +2272,7 @@ endif()
                 Tests/DDGICameraIdleGateTests.cpp
                 Tests/DDGISolveBudgetTests.cpp
                 Tests/DDGIProbeWindowTests.cpp
+                Tests/DDGIVolumeExtentsTests.cpp
                 Tests/DDGIDepthNormalComputeTests.cpp
                 Tests/DDGIBlendComputeTests.cpp
                 Tests/DDGIParallaxComputeTests.cpp
@@ -2931,7 +2942,7 @@ endif()
 			        WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 			endif()
 
-			# Engine tests: S2.3 validating RenderPipelineCompiler + the 24-blueprint fleet gate.
+			# Engine tests: S2.3 validating RenderPipelineCompiler + the 24-prefab fleet gate.
 			if(GTest_FOUND OR TARGET GTest::gtest)
 			    add_executable(RenderPipelineCompilerTests
 			        Tests/RenderPipelineCompilerTests.cpp
@@ -3597,6 +3608,30 @@ endif()
 	    ge_set_output_tests(EngineSceneIOTests)
 	    ge_stage_runtime_dependencies(EngineSceneIOTests)
 	    add_test(NAME EngineSceneIOTests COMMAND $<TARGET_FILE:EngineSceneIOTests>)
+	endif()
+
+	# Engine tests: the scene raycast (Scene::RaycastScene) over the renderers, the BVH cache with its
+	# disk format, and the terrain hit. The pending-BVH and terrain suites initialize the engine; the
+	# shutdown environment stops it before main returns.
+	if(GTest_FOUND OR TARGET GTest::gtest)
+	    add_executable(SceneRaycastTests
+	        Tests/SceneRaycastPendingBvhTests.cpp
+	        Tests/SceneRaycastTerrainInclusionTests.cpp
+	        Tests/TerrainPickingRayTests.cpp
+	        Tests/MeshBvhDiskFormatTests.cpp
+	        ${CMAKE_SOURCE_DIR}/Tests/EngineShutdownEnvironment.cpp)
+	    target_link_libraries(SceneRaycastTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+	    # PagedTiledTerrain.h and TestTempDir.h, shared across the test trees.
+	    # Engine/Source: the BVH cache and its disk format, private headers the tests reach.
+	    target_include_directories(SceneRaycastTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+	    set_target_properties(SceneRaycastTests PROPERTIES
+	        CXX_STANDARD 20
+	        CXX_STANDARD_REQUIRED ON
+	        FOLDER "Engine/Tests"
+	    )
+	    ge_set_output_tests(SceneRaycastTests)
+	    ge_stage_runtime_dependencies(SceneRaycastTests)
+	    add_test(NAME SceneRaycastTests COMMAND $<TARGET_FILE:SceneRaycastTests>)
 	endif()
 
 	if(GTest_FOUND OR TARGET GTest::gtest)

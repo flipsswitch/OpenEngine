@@ -8613,7 +8613,7 @@ EditorApplication::RenderWindowFrameResult EditorApplication::RenderWindowFrame(
     }
     if (routing.gvPanel && ctx->ui)
         routing.gvPanel->PrepareForFirstMount(ctx->ui.get());
-    routing.forceGameViewRecord = ctx->gameView && ctx->gameView->GetMovieCapture().IsRecording();
+    routing.forceGameViewRecord = ctx->gameView && ctx->gameView->GetMovieCapture().IsSessionOpen();
     if (routing.rg2Scene && ctx->gameView)
     {
         if (routing.forceGameViewRecord)

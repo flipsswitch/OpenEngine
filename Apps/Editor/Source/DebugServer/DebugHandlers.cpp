@@ -7886,6 +7886,10 @@ void RegisterDebugHandlers(EditorDebugServer& server,
     // Movie recording automation: drives GameViewController's recording
     // directly (the panel UI flow is interaction-heavy and its embedded
     // variant swallows failure statuses). action=start|stop|status.
+    // The status and stop replies carry "recording" (true until the encoder has
+    // closed the file), "finalizing" (the session ended and the encoder is still
+    // writing the index), "failure" (only when the encoder failed to open or write
+    // the file) and "framesWritten"; status adds "width" and "height".
     // The debug recording path bypasses MovieRecorderPanel's normal start/stop
     // callbacks, so retain the requested path and publish it when stopping.
     auto debugMoviePath = std::make_shared<std::filesystem::path>();
@@ -7934,13 +7938,24 @@ void RegisterDebugHandlers(EditorDebugServer& server,
             debugMoviePath->clear();
             if (!completedPath.empty() && app.m_MovieRecorder)
                 app.m_MovieRecorder->NotifyExternalRecordingFinished(completedPath);
-            return json{{"ok", true}, {"recording", gameView->GetMovieCapture().IsRecording()},
-                        {"framesWritten", gameView->GetMovieCapture().GetFramesWritten()}};
         }
-        return json{{"recording", gameView->GetMovieCapture().IsRecording()},
-                    {"framesWritten", gameView->GetMovieCapture().GetFramesWritten()},
-                    {"width", gameView->GetMovieCapture().GetWidth()},
-                    {"height", gameView->GetMovieCapture().GetHeight()}}; });
+        // "recording" stays true until the container is closed, so a caller that
+        // polls it until false opens a complete file when "failure" is absent.
+        const auto& capture = gameView->GetMovieCapture();
+        const auto status = capture.GetRecordingStatus();
+        json reply{{"recording", status.Recording},
+                   {"finalizing", status.Finalizing},
+                   {"framesWritten", capture.GetFramesWritten()}};
+        if (!status.Failure.empty())
+            reply["failure"] = status.Failure;
+        if (action == "stop")
+        {
+            reply["ok"] = true;
+            return reply;
+        }
+        reply["width"] = capture.GetWidth();
+        reply["height"] = capture.GetHeight();
+        return reply; });
 
     // 16. set_scene_tool
     // Switch the active scene view tool.

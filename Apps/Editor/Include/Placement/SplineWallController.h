@@ -68,6 +68,8 @@ private:
         SplineRebuildGate<ObservedState> Gate;
         bool CenterlineBudgetLogged = false;
         uint32 LoggedConformMisses = 0;
+        // A rebuild held on a pending BVH (HoldForPendingBvh): not marked built, so it runs again.
+        ConformHold Hold;
         // Validation lines last logged for this wall, so they log once per
         // change rather than once per rebuild (ReportRecipeValidation).
         std::vector<std::string> LoggedValidation;

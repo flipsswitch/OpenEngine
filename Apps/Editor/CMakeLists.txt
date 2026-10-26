@@ -63,6 +63,7 @@ set(EDITOR_SOURCES
     Source/UndoRedo/RenameAssetCommand.cpp
     Source/UndoRedo/SetAssetMetaValueCommand.cpp
     Source/UndoRedo/SplinePointEdits.cpp
+    Source/UndoRedo/SplineNetworkRecordCommand.cpp
     Source/Assets/AsyncAssetHelpers.cpp
     Source/Assets/TexturePreparingStatusItem.cpp
     Source/Editor/Registries/BuiltInStatusBarItems.cpp
@@ -123,7 +124,6 @@ set(EDITOR_SOURCES
     Source/Projects/ProjectAcquisition.cpp
     Source/Projects/ProjectStartupScene.cpp
     Source/Projects/SubprocessStream.cpp
-    Source/Projects/ZipArchive.cpp
     Source/Panels/SaveSceneAsModal.cpp
     Source/Panels/DownloadInProgressModal.cpp
     Source/Panels/ConfirmActionModal.cpp
@@ -582,13 +582,9 @@ set(EDITOR_SOURCES
 	Source/Placement/SplineWallBuild.cpp
 	Source/Placement/SplineWallController.cpp
 	Source/Placement/SplineWallSanitize.cpp
-	# Mesh picking service (shared per-triangle CPU raycaster).
-	Source/Picking/MeshPickingService.cpp
-	Source/Picking/MeshBvhCache.cpp
-	Source/Picking/MeshBvhDiskFormat.cpp
+	# The editor's pick over the engine's scene raycast: the eye, the pick providers, the root.
+	Source/Picking/ScenePick.cpp
 	Source/Picking/PickRootResolver.cpp
-	Source/Picking/PrimitiveMeshes.cpp
-	Source/Picking/TerrainPicking.cpp
 	Source/EditorApplication_InspectorSettings.cpp
 	Source/Editor/Settings/EditorHiDpiPlatformSettings.cpp
 	Source/EditorApplication_Fullscreen.cpp
@@ -995,6 +991,8 @@ set(EDITOR_SDK_SOURCES
 	Source/Editor/Assets/UnityImportHostedConverter.cpp
 	Source/Editor/Assets/EditorAssetActions.cpp
 	Source/Editor/CaptureOutputDirectory.cpp
+	# The zip reader, in the SDK so package modules can list and extract archives too.
+	Source/Editor/ZipArchiveReader.cpp
 	Source/EditorPaths.cpp
 	Source/SettingsStore.cpp
 	Source/InspectorRegistry.cpp
@@ -1017,13 +1015,26 @@ set(EDITOR_SDK_SOURCES
 	Source/Editor/Entities/EntityDisplayName.cpp
 )
 
-# Vendored miniz (zip reader for project acquisition).
-set(EDITOR_MINIZ_SOURCES
+# Vendored miniz, behind Editor/ZipArchiveReader.h: one static library, compiled quietly like
+# the engine's other vendored libraries. EditorSDK links it privately, so the SDK exports none
+# of it: WINDOWS_EXPORT_ALL_SYMBOLS exports only the SDK's own objects, and hidden visibility
+# keeps it out of the ELF export table, so a package module that vendors its own miniz never
+# binds to this copy.
+add_library(EditorMiniz STATIC
 	${CMAKE_SOURCE_DIR}/Engine/Source/ThirdParty/miniz/miniz.c
 	${CMAKE_SOURCE_DIR}/Engine/Source/ThirdParty/miniz/miniz_tdef.c
 	${CMAKE_SOURCE_DIR}/Engine/Source/ThirdParty/miniz/miniz_tinfl.c
 	${CMAKE_SOURCE_DIR}/Engine/Source/ThirdParty/miniz/miniz_zip.c
 )
+target_include_directories(EditorMiniz PUBLIC ${CMAKE_SOURCE_DIR}/Engine/Source/ThirdParty/miniz)
+set_target_properties(EditorMiniz PROPERTIES
+	POSITION_INDEPENDENT_CODE ON
+	C_VISIBILITY_PRESET hidden
+	FOLDER "ThirdParty"
+)
+if(MSVC)
+	target_compile_options(EditorMiniz PRIVATE /w)
+endif()
 
 # Editor/BuildCommit.h: the short commit id the title bar and the info dialog show beside the
 # engine version (Source/Editor/Application/EditorVersion.cpp). The target runs on every
@@ -1082,9 +1093,7 @@ if(EMSCRIPTEN)
 		${WEB_EDITOR_SOURCES}
 		${EDITOR_HEADERS}
 		${EDITOR_SDK_SOURCES}
-		${EDITOR_MINIZ_SOURCES}
 		$<TARGET_OBJECTS:VCSIntegration>
-		$<TARGET_OBJECTS:MeshPicking>
 	)
 	add_dependencies(WebEditor EditorBuildCommit)
 	target_include_directories(WebEditor PRIVATE "${GE_EDITOR_BUILD_COMMIT_DIR}")
@@ -1108,7 +1117,6 @@ if(EMSCRIPTEN)
 		${CMAKE_SOURCE_DIR}/Engine/Include
 		${CMAKE_SOURCE_DIR}/Engine/Modules/Audio/Include
 		${CMAKE_SOURCE_DIR}/Engine/Modules/VCSIntegration/Include
-		${CMAKE_SOURCE_DIR}/Engine/Source/ThirdParty/miniz
 		${CMAKE_CURRENT_SOURCE_DIR}/Source
 		${CMAKE_CURRENT_SOURCE_DIR}/Include
 		${CMAKE_CURRENT_SOURCE_DIR}/Modules
@@ -1116,15 +1124,13 @@ if(EMSCRIPTEN)
 		${_GE_EZTREE_EDITOR}
 		${CMAKE_SOURCE_DIR}/Engine/Modules/NativeScripting/Include
 		${CMAKE_SOURCE_DIR}/Engine/Modules/NativeScripting/GameSDK/Include
-		$<TARGET_PROPERTY:MeshPicking,INTERFACE_INCLUDE_DIRECTORIES>
 	)
 	target_compile_definitions(WebEditor PRIVATE
 		GE_BUILD_CONFIG="$<CONFIG>"
 		GE_ENABLE_MIMALLOC=0
-		$<TARGET_PROPERTY:MeshPicking,INTERFACE_COMPILE_DEFINITIONS>
 	)
 	target_compile_features(WebEditor PRIVATE cxx_std_20)
-	target_link_libraries(WebEditor PRIVATE Engine Types Mathematics Events AssetDatabaseSqlite)
+	target_link_libraries(WebEditor PRIVATE Engine Types Mathematics Events AssetDatabaseSqlite EditorMiniz)
 	if(TARGET nlohmann_json::nlohmann_json)
 		target_link_libraries(WebEditor PRIVATE nlohmann_json::nlohmann_json)
 	endif()
@@ -1593,6 +1599,7 @@ add_library(EditorSDK SHARED ${EDITOR_SDK_SOURCES})
 # target link) so the OBJECT lib's engine-module link interface is not
 # replayed here (see the note above about registry statics).
 target_sources(EditorSDK PRIVATE $<TARGET_OBJECTS:VCSIntegration>)
+target_link_libraries(EditorSDK PRIVATE EditorMiniz)
 ge_add_production_allocation_hook(EditorSDK)
 # The engine-ABI digest of Editor-kind modules folds this binary's link stamp
 # (ReadBinaryLinkStamp); an ELF link writes one only when asked.
@@ -1748,14 +1755,7 @@ target_include_directories(Editor PRIVATE
 	${CMAKE_CURRENT_SOURCE_DIR}/Source
 	${CMAKE_CURRENT_SOURCE_DIR}/Include
 	${CMAKE_CURRENT_SOURCE_DIR}/Modules
-	${CMAKE_SOURCE_DIR}/Engine/Source/ThirdParty/miniz
 )
-
-# Third-party C sources; compiled quietly like the engine's other vendored libraries.
-target_sources(Editor PRIVATE ${EDITOR_MINIZ_SOURCES})
-if(MSVC)
-	set_source_files_properties(${EDITOR_MINIZ_SOURCES} PROPERTIES COMPILE_OPTIONS "/w")
-endif()
 
 # Engine.dll bundles engine modules as OBJECT files spliced in at SHARED-link time,
 # so Editor.exe must not link those modules directly. Doing so can duplicate
@@ -1767,32 +1767,6 @@ target_link_libraries(Editor PRIVATE Engine EditorSDK)
 # back into the cache by linking it and injecting the factory at startup via
 # AssetRegistry::SetAssetDbCacheFactory.
 target_link_libraries(Editor PRIVATE AssetDatabaseSqlite)
-
-# These modules are editor-only, so their object files belong in Editor. Add the
-# objects without linking the OBJECT-library targets so their transitive engine
-# module link interfaces do not get replayed on the Editor executable.
-#
-# Graph moved out of this list when Engine.dll started using it internally
-# (MaterialCompiler / CoreAssetRegistrations); it now lives in
-# GE_ENGINE_MODULES so Editor.exe reaches it via Engine.dll's import lib.
-# VCSIntegration (the contract) moved into EditorSDK.dll; every VCS provider
-# (git, svn, diversion, lore) lives in an Editor-kind package module under
-# Packages/ — the editor core carries zero provider code and packaged
-# games ship no VCS code.
-set(_GE_EDITOR_OBJECT_MODULES
-	MeshPicking
-)
-foreach(_ge_editor_object_module IN LISTS _GE_EDITOR_OBJECT_MODULES)
-	if(TARGET ${_ge_editor_object_module})
-		target_sources(Editor PRIVATE $<TARGET_OBJECTS:${_ge_editor_object_module}>)
-		target_include_directories(Editor PRIVATE
-			$<TARGET_PROPERTY:${_ge_editor_object_module},INTERFACE_INCLUDE_DIRECTORIES>
-		)
-		target_compile_definitions(Editor PRIVATE
-			$<TARGET_PROPERTY:${_ge_editor_object_module},INTERFACE_COMPILE_DEFINITIONS>
-		)
-	endif()
-endforeach()
 
 if(MSVC)
 	target_compile_options(Editor PRIVATE /bigobj /wd4100)
