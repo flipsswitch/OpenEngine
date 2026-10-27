@@ -1,22 +1,97 @@
-#include "Logger/Logger.h"
 #include "Jobs/HotReloadTasks.h"
 #include "JobSystem/JobChannel.h"
 #include "JobSystem/WorkStealingThreadPool.h"
-#include "JobSystem/TaskDependencyGraph.h"
+#include "Logger/Logger.h"
 #include "MockHotReloadDependencies.h"
-#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
-#include <chrono>
+#include <future>
+#include <memory>
+#include <mutex>
 #include <numeric>
-#include <algorithm>
+#include <span>
 #include <stdexcept>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include <gtest/gtest.h>
 
 // TODO: HotReload tests currently rely on a .NET runtimeconfig.json (e.g., ScriptAssemblies/<Config>/net10.0/GameEngine.Scripts.runtimeconfig.json).
 // Tests may cancel with "Pipeline execution cancelled" if this file is missing. We should add a proper fixture
 // or configure the pipeline to accept an injected runtime path. This is outside the PascalCase Task/TaskHandle migration scope.
 
 namespace GameEngine::Tests {
+
+namespace {
+
+struct StageExecutionLog {
+    std::mutex Mutex;
+    std::vector<std::string> Stages;
+};
+
+void RecordStage(const std::shared_ptr<StageExecutionLog>& log, const std::string& stage) {
+    std::lock_guard<std::mutex> lock(log->Mutex);
+    log->Stages.push_back(stage);
+}
+
+class OrderedStageTask : public JobSystem::Task {
+public:
+    OrderedStageTask(JobSystem::WorkStealingThreadPool* pool, std::string stage,
+                     std::shared_ptr<StageExecutionLog> log, std::shared_future<void> gate = {})
+        : Task(pool), m_Stage(std::move(stage)), m_Log(std::move(log)), m_Gate(std::move(gate)) {}
+
+    void Execute() override {
+        if (m_Gate.valid()) {
+            m_Gate.wait();
+        }
+        RecordStage(m_Log, m_Stage);
+    }
+
+private:
+    std::string m_Stage;
+    std::shared_ptr<StageExecutionLog> m_Log;
+    std::shared_future<void> m_Gate;
+};
+
+void ExpectOrderedStages(const std::array<JobSystem::TaskHandle, 4>& handles,
+                         const std::shared_ptr<StageExecutionLog>& log) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!std::all_of(handles.begin(), handles.end(), [](const auto& handle) { return handle.IsDone(); }) &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    for (const auto& handle : handles) {
+        EXPECT_TRUE(handle.IsCompleted()) << handle.GetErrorMessage();
+        EXPECT_FALSE(handle.HasFailed()) << handle.GetErrorMessage();
+    }
+    const std::vector<std::string> expected{"Compilation", "FileLoad", "AssemblyPrep", "Swap"};
+    std::lock_guard<std::mutex> lock(log->Mutex);
+    EXPECT_EQ(log->Stages, expected);
+}
+
+class GatedCancellationCompiler : public Jobs::ICompiler {
+public:
+    GatedCancellationCompiler(std::shared_ptr<std::promise<void>> started, std::shared_future<void> release)
+        : m_Started(std::move(started)), m_Release(std::move(release)) {}
+
+    CompilationResult compile(const String&, const std::atomic<bool>*) override {
+        m_Started->set_value();
+        m_Release.wait();
+        return {true, "gated compile completed", {}, {}};
+    }
+
+private:
+    std::shared_ptr<std::promise<void>> m_Started;
+    std::shared_future<void> m_Release;
+};
+
+} // namespace
 
 class HotReloadPipelineTest : public ::testing::Test {
 protected:
@@ -212,7 +287,39 @@ TEST_F(HotReloadPipelineTest, CompletePipelineExecution) {
  * @brief Test pipeline cancellation
  */
 TEST_F(HotReloadPipelineTest, PipelineCancellation) {
-    GTEST_SKIP() << "Cancellation is currently disabled in HotReloadPipeline (monitor loop), skipping test";
+    auto started = std::make_shared<std::promise<void>>();
+    auto compileStarted = started->get_future();
+    // Destroying this promise also releases the compile on an assertion exit before TearDown.
+    std::promise<void> release;
+    auto compileGate = release.get_future().share();
+    auto laterStages = std::make_shared<std::atomic<int>>(0);
+    pipeline->SetCompilerFactory([started, compileGate] {
+        return std::make_unique<GatedCancellationCompiler>(started, compileGate);
+    });
+    pipeline->SetAssemblyLoaderFactory([laterStages] {
+        laterStages->fetch_add(1);
+        return std::make_unique<MockAssemblyLoader>();
+    });
+    pipeline->SetSwapperFactory([laterStages] {
+        laterStages->fetch_add(1);
+        return std::make_unique<MockAssemblySwapper>();
+    });
+
+    auto run = pipeline->ExecuteAsync(testAssemblyPath.string());
+    ASSERT_EQ(compileStarted.wait_for(std::chrono::seconds(10)), std::future_status::ready);
+    pipeline->Cancel();
+    ASSERT_EQ(run.wait_for(std::chrono::seconds(10)), std::future_status::ready);
+    const auto stats = run.get();
+    EXPECT_FALSE(stats.success);
+    EXPECT_EQ(stats.result, HotReloadResult::CancelledByNewOperation);
+    EXPECT_FALSE(pipeline->IsExecuting());
+    EXPECT_FLOAT_EQ(pipeline->GetProgress(), 0.0f);
+
+    release.set_value();
+    pipeline.reset();
+    compileChannel.reset();
+    threadPool.reset();
+    EXPECT_EQ(laterStages->load(), 0) << "a canceled compile must not start loading or swapping";
 }
 
 /**
@@ -275,87 +382,44 @@ TEST_F(HotReloadPipelineTest, ProgressTracking) {
  */
 TEST_F(HotReloadPipelineTest, ConcurrentExecutions) {
     // Start first execution
-    auto future1 = pipeline->ExecuteAsync(testAssemblyPath.string());
+    auto firstRun = pipeline->ExecuteAsync(testAssemblyPath.string());
 
-    // Start second execution; with cancellation disabled in pipeline monitor, the first may complete instead of cancelling
-    auto future2 = pipeline->ExecuteAsync(testAssemblyPath.string());
+    // Start a superseding execution; the first may already have completed.
+    auto secondRun = pipeline->ExecuteAsync(testAssemblyPath.string());
 
     // Wait for both to complete
-    auto stats1 = future1.get();
-    auto stats2 = future2.get();
+    auto firstResult = firstRun.get();
+    auto secondResult = secondRun.get();
 
     // Second should succeed; first may either succeed (if it finished quickly) or be cancelled by the lock handover path
-    EXPECT_TRUE(stats2.success);
-    EXPECT_EQ(stats2.result, HotReloadResult::Success);
+    EXPECT_TRUE(firstResult.success || IsCancellation(firstResult.result));
+    EXPECT_TRUE(secondResult.success);
+    EXPECT_EQ(secondResult.result, HotReloadResult::Success);
 }
 
-/**
- * @brief Test task dependency ordering through WorkStealingThreadPool
- * NOTE: This test is temporarily disabled as it needs to be updated for the current dependency API
- */
-TEST_F(HotReloadPipelineTest, DISABLED_TaskDependencyOrdering) {
-    // Test dependency ordering by using the WorkStealingThreadPool's dependency management
-    // This test verifies that dependencies are properly managed through the thread pool
+TEST_F(HotReloadPipelineTest, TaskDependencyOrdering) {
+    auto log = std::make_shared<StageExecutionLog>();
+    std::promise<void> release;
+    auto compilation = std::make_unique<OrderedStageTask>(threadPool.get(), "Compilation", log, release.get_future().share());
+    auto fileLoad = std::make_unique<OrderedStageTask>(threadPool.get(), "FileLoad", log);
+    auto assemblyPrep = std::make_unique<OrderedStageTask>(threadPool.get(), "AssemblyPrep", log);
+    auto swap = std::make_unique<OrderedStageTask>(threadPool.get(), "Swap", log);
+    fileLoad->AddDependency(compilation->GetTaskId());
+    assemblyPrep->AddDependency(fileLoad->GetTaskId());
+    swap->AddDependency(assemblyPrep->GetTaskId());
 
-    std::atomic<int> executionOrder{0};
-    std::vector<std::pair<int, std::string>> executionLog;
-    std::mutex logMutex;
-
-    // Create mock tasks that record execution order
-    class OrderedTask : public JobSystem::Task {
-    public:
-        OrderedTask(JobSystem::WorkStealingThreadPool* jobSystem, const std::string& name,
-                   std::atomic<int>* counter, std::vector<std::pair<int, std::string>>* log, std::mutex* logMutex)
-            : JobSystem::Task(jobSystem), m_Name(name), m_Counter(counter), m_Log(log), m_LogMutex(logMutex) {}
-
-        void Execute() override {
-            int order = m_Counter->fetch_add(1);
-            {
-                std::lock_guard<std::mutex> lock(*m_LogMutex);
-                m_Log->emplace_back(order, m_Name);
-            }
-        }
-
-    private:
-        std::string m_Name;
-        std::atomic<int>* m_Counter;
-        std::vector<std::pair<int, std::string>>* m_Log;
-        std::mutex* m_LogMutex;
-    };
-
-    // Create tasks with dependency chain: Compilation → FileLoad → AssemblyPrep → Swap
-    auto compilationTask = std::make_unique<OrderedTask>(threadPool.get(), "Compilation", &executionOrder, &executionLog, &logMutex);
-    auto fileLoadTask = std::make_unique<OrderedTask>(threadPool.get(), "FileLoad", &executionOrder, &executionLog, &logMutex);
-    auto assemblyPrepTask = std::make_unique<OrderedTask>(threadPool.get(), "AssemblyPrep", &executionOrder, &executionLog, &logMutex);
-    auto swapTask = std::make_unique<OrderedTask>(threadPool.get(), "Swap", &executionOrder, &executionLog, &logMutex);
-
-    // Set up dependencies before submitting (using current API)
-    // Note: Dependencies should be set up during task creation in the current API
-    // For this test, we'll submit tasks and use TaskHandle dependencies
-    auto handle1 = threadPool->Submit(std::move(compilationTask));
-    auto handle2 = threadPool->Submit(std::move(fileLoadTask));
-    auto handle3 = threadPool->Submit(std::move(assemblyPrepTask));
-    auto handle4 = threadPool->Submit(std::move(swapTask));
-
-    // Set up dependencies using TaskHandle API (if available)
-    // Note: This test may need to be updated to match current dependency API
-
-    // Wait for all tasks to complete
-    while (!handle4.IsCompleted() && !handle4.HasFailed()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    std::array<JobSystem::TaskHandle, 4> handles{
+        threadPool->Submit(std::move(compilation)),
+        threadPool->Submit(std::move(fileLoad)),
+        threadPool->Submit(std::move(assemblyPrep)),
+        threadPool->Submit(std::move(swap))};
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    for (const auto& handle : handles) {
+        EXPECT_TRUE(handle.IsValid());
+        EXPECT_FALSE(handle.IsDone()) << "a stage ran before its compilation dependency finished";
     }
-
-    // Verify execution order
-    {
-        std::lock_guard<std::mutex> lock(logMutex);
-        EXPECT_EQ(executionLog.size(), 4);
-        if (executionLog.size() == 4) {
-            EXPECT_EQ(executionLog[0].second, "Compilation");
-            EXPECT_EQ(executionLog[1].second, "FileLoad");
-            EXPECT_EQ(executionLog[2].second, "AssemblyPrep");
-            EXPECT_EQ(executionLog[3].second, "Swap");
-        }
-    }
+    release.set_value();
+    ExpectOrderedStages(handles, log);
 }
 
 /**
@@ -393,118 +457,33 @@ TEST_F(HotReloadPipelineTest, PerformanceBenchmark) {
     }
 }
 
-/**
- * @brief Test WorkStealingThreadPool and TaskDependencyGraph integration
- * This test specifically validates the fixes we implemented for proper task dependency handling
- * NOTE: This test is temporarily disabled as it needs to be updated for the current dependency API
- */
-TEST_F(HotReloadPipelineTest, DISABLED_WorkStealingThreadPoolIntegration) {
-    Logger::Log::Info("=== Testing WorkStealingThreadPool and TaskDependencyGraph Integration ===");
+TEST_F(HotReloadPipelineTest, WorkStealingThreadPoolIntegration) {
+    auto log = std::make_shared<StageExecutionLog>();
+    std::promise<void> release;
+    auto compileGate = release.get_future().share();
+    auto compilation = compileChannel->Submit([log, compileGate] {
+        compileGate.wait();
+        RecordStage(log, "Compilation");
+    });
+    auto fileLoad = threadPool->Submit([log] { RecordStage(log, "FileLoad"); },
+                                     std::span<const JobSystem::TaskHandle>(&compilation, 1));
+    auto assemblyPrep = std::make_unique<OrderedStageTask>(threadPool.get(), "AssemblyPrep", log);
+    auto swap = std::make_unique<OrderedStageTask>(threadPool.get(), "Swap", log);
+    assemblyPrep->AddDependency(fileLoad.GetId());
+    swap->AddDependency(assemblyPrep->GetTaskId());
 
-    // Track execution order to verify dependency graph works correctly
-    std::atomic<int> executionOrder{0};
-    std::vector<std::pair<int, std::string>> executionLog;
-    std::mutex logMutex;
-
-    // Create mock tasks that record their execution order
-    class MockOrderedTask : public JobSystem::Task {
-    public:
-        MockOrderedTask(JobSystem::WorkStealingThreadPool* jobSystem, const std::string& name,
-                       int expectedOrder, std::atomic<int>* counter,
-                       std::vector<std::pair<int, std::string>>* log, std::mutex* logMutex)
-            : JobSystem::Task(jobSystem), m_Name(name), m_ExpectedOrder(expectedOrder),
-              m_Counter(counter), m_Log(log), m_LogMutex(logMutex) {}
-
-        void Execute() override {
-            // Simulate some work
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-
-            // Record execution order
-            int order = m_Counter->fetch_add(1);
-            {
-                std::lock_guard<std::mutex> lock(*m_LogMutex);
-                m_Log->emplace_back(order, m_Name);
-            }
-
-            Logger::Log::Info("[{}] Executed with order: {} (expected: {})", m_Name, order, m_ExpectedOrder);
-
-            // Verify execution order matches dependency constraints
-            EXPECT_EQ(order, m_ExpectedOrder) << "Task " << m_Name << " executed out of order";
-        }
-
-    private:
-        std::string m_Name;
-        int m_ExpectedOrder;
-        std::atomic<int>* m_Counter;
-        std::vector<std::pair<int, std::string>>* m_Log;
-        std::mutex* m_LogMutex;
-    };
-
-    // Create tasks with dependency chain: Task1 → Task2 → Task3 → Task4
-    auto task1 = std::make_unique<MockOrderedTask>(threadPool.get(), "Compilation", 0, &executionOrder, &executionLog, &logMutex);
-    auto task2 = std::make_unique<MockOrderedTask>(threadPool.get(), "FileLoad", 1, &executionOrder, &executionLog, &logMutex);
-    auto task3 = std::make_unique<MockOrderedTask>(threadPool.get(), "AssemblyPrep", 2, &executionOrder, &executionLog, &logMutex);
-    auto task4 = std::make_unique<MockOrderedTask>(threadPool.get(), "MainThreadSwap", 3, &executionOrder, &executionLog, &logMutex);
-
-    // Set up dependencies
-    task2->AddDependency(task1->GetTaskId());
-    task3->AddDependency(task2->GetTaskId());
-    task4->AddDependency(task3->GetTaskId());
-
-    Logger::Log::Info("Created dependency chain: Compilation → FileLoad → AssemblyPrep → MainThreadSwap");
-
-    // Submit tasks to WorkStealingThreadPool
-    auto handle1 = threadPool->Submit(std::move(task1));
-    auto handle2 = threadPool->Submit(std::move(task2));
-    auto handle3 = threadPool->Submit(std::move(task3));
-    auto handle4 = threadPool->Submit(std::move(task4));
-
-    Logger::Log::Info("All tasks submitted to WorkStealingThreadPool with dependency registration");
-
-    // Wait for all tasks to complete
-    auto startTime = std::chrono::high_resolution_clock::now();
-    const auto timeout = std::chrono::seconds(10);
-
-    while (!handle4.IsCompleted() && !handle4.HasFailed() &&
-           std::chrono::high_resolution_clock::now() - startTime < timeout) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    std::array<JobSystem::TaskHandle, 4> handles{
+        compilation,
+        fileLoad,
+        threadPool->Submit(std::move(assemblyPrep)),
+        threadPool->Submit(std::move(swap))};
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    for (const auto& handle : handles) {
+        EXPECT_TRUE(handle.IsValid());
+        EXPECT_FALSE(handle.IsDone()) << "a compute stage ran before the channel job finished";
     }
-
-    auto endTime = std::chrono::high_resolution_clock::now();
-    auto totalDuration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime);
-
-    // Verify all tasks completed successfully
-    EXPECT_TRUE(handle1.IsCompleted()) << "Compilation task failed";
-    EXPECT_FALSE(handle1.HasFailed()) << "Compilation task failed: " << handle1.GetErrorMessage();
-    EXPECT_TRUE(handle2.IsCompleted()) << "FileLoad task failed";
-    EXPECT_FALSE(handle2.HasFailed()) << "FileLoad task failed: " << handle2.GetErrorMessage();
-    EXPECT_TRUE(handle3.IsCompleted()) << "AssemblyPrep task failed";
-    EXPECT_FALSE(handle3.HasFailed()) << "AssemblyPrep task failed: " << handle3.GetErrorMessage();
-    EXPECT_TRUE(handle4.IsCompleted()) << "MainThreadSwap task failed";
-    EXPECT_FALSE(handle4.HasFailed()) << "MainThreadSwap task failed: " << handle4.GetErrorMessage();
-
-    // Verify execution order
-    EXPECT_EQ(executionOrder.load(), 4) << "Not all tasks executed";
-
-    // Verify execution log
-    {
-        std::lock_guard<std::mutex> lock(logMutex);
-        EXPECT_EQ(executionLog.size(), 4) << "Execution log incomplete";
-
-        if (executionLog.size() == 4) {
-            EXPECT_EQ(executionLog[0].second, "Compilation");
-            EXPECT_EQ(executionLog[1].second, "FileLoad");
-            EXPECT_EQ(executionLog[2].second, "AssemblyPrep");
-            EXPECT_EQ(executionLog[3].second, "MainThreadSwap");
-        }
-    }
-
-    Logger::Log::Info("=== WorkStealingThreadPool Integration Test Completed Successfully ===");
-    Logger::Log::Info("Total execution time: {}ms", totalDuration.count());
-    Logger::Log::Info("All tasks executed in correct dependency order");
-
-    // Performance validation - should complete quickly since tasks are lightweight
-    EXPECT_LT(totalDuration.count(), 1000) << "Task execution took too long";
+    release.set_value();
+    ExpectOrderedStages(handles, log);
 }
 
 // A superseded run reports failure, so every consumer that picks a log severity has to
